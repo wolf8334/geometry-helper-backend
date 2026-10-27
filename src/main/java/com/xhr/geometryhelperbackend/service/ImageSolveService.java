@@ -52,14 +52,18 @@ public class ImageSolveService {
             "jpeg", "image/jpeg",
             "png", "image/png",
             "webp", "image/webp",
-            "gif", "image/gif"
+            "gif", "image/gif",
+            "bmp", "image/bmp",
+            "tif", "image/tiff",
+            "tiff", "image/tiff"
     );
 
     /**
-     * 主流多模态模型普遍支持的图片子类型。
-     * 提前拦截 BMP、TIFF 等格式，避免请求发出后才被供应商拒绝。
+     * 允许上传的图片子类型。BMP、TIFF 会在调用模型前由
+     * {@link ImageProcessingService} 转换为 JPEG/PNG。
      */
-    private static final Set<String> SUPPORTED_IMAGE_SUBTYPES = Set.of("jpeg", "png", "webp", "gif");
+    private static final Set<String> SUPPORTED_IMAGE_SUBTYPES = Set.of(
+            "jpeg", "png", "webp", "gif", "bmp", "tiff");
 
     /**
      * 用户补充说明的最大字符数，避免超长文本撑大提示词。
@@ -82,13 +86,17 @@ public class ImageSolveService {
 
     private final AiProperties aiProperties;
 
+    private final ImageProcessingService imageProcessingService;
+
     public ImageSolveService(
             @Qualifier(AiConfig.VISION_CHAT_CLIENT) ChatClient visionChatClient,
             @Qualifier(AiConfig.SOLVE_CHAT_CLIENT) ChatClient solveChatClient,
-            AiProperties aiProperties) {
+            AiProperties aiProperties,
+            ImageProcessingService imageProcessingService) {
         this.visionChatClient = visionChatClient;
         this.solveChatClient = solveChatClient;
         this.aiProperties = aiProperties;
+        this.imageProcessingService = imageProcessingService;
     }
 
     /**
@@ -196,18 +204,27 @@ public class ImageSolveService {
                 throw new IllegalArgumentException("只支持图片文件，当前文件类型为：" + mimeType);
             }
 
-            // 2. 读取图片字节。MultipartFile 的临时文件会在请求结束后被清理，
-            //    所以必须在请求线程内完成读取。
+            // 2. 读取原始图片字节。MultipartFile 的临时文件会在请求结束后被清理，
+            //    所以必须在请求线程内完成读取。原始字节保留给历史记录使用，
+            //    压缩后的字节只发给模型。
+            byte[] originalImageBytes;
             try {
-                imageBytes = file.getBytes();
+                originalImageBytes = file.getBytes();
             } catch (IOException exception) {
                 log.error("读取上传图片失败 文件名 {}", file.getOriginalFilename(), exception);
                 throw new AiServiceException("读取上传图片失败，请稍后重试", exception);
             }
+
+            // 3. Bedrock/Claude 限制单张图片小于 5MB。所有引擎在调用模型前
+            //    都走同一套处理逻辑，避免视觉阶段或解题阶段各自遗漏。
+            ImageProcessingService.ProcessedImage processedImage = this.imageProcessingService
+                    .process(originalImageBytes, mimeType, file.getOriginalFilename());
+            imageBytes = processedImage.bytes();
+            mimeType = processedImage.mimeType();
         }
 
-        // 3. 构造 Spring AI 多媒体对象。Media 内部会把字节转换成模型需要的
-        //    base64 data URL（由具体模型实现负责）。
+        // 4. 构造 Spring AI 多媒体对象。这里传入的是压缩后的字节和对应 MIME，
+        //    Media 内部会再做 base64 编码，因此不能提前把图片转成 base64 字符串。
         Media imageMedia = hasImage
                 ? Media.builder().mimeType(mimeType).data(imageBytes).build()
                 : null;
@@ -215,7 +232,7 @@ public class ImageSolveService {
         log.info("{} 开始调用模型 带图片={}", operation, hasImage);
         long startNanos = System.nanoTime();
         try {
-            // 4. 发送“系统提示词 + 用户文本 + 可选图片”。
+            // 5. 发送“系统提示词 + 用户文本 + 可选图片”。
             ChatResponse response = chatClient.prompt()
                     .user(userSpec -> {
                         userSpec.text(userText);
@@ -232,7 +249,7 @@ public class ImageSolveService {
             }
 
             long costMillis = (System.nanoTime() - startNanos) / 1_000_000;
-            log.info("{} 模型调用完成 带图片={} 文件大小={}KB 耗时={}s",
+            log.info("{} 模型调用完成 带图片={} 发送图片={}KB 耗时={}s",
                     operation, hasImage,
                     imageBytes == null ? 0 : imageBytes.length / 1024,
                     costMillis / 1000);
@@ -455,7 +472,8 @@ public class ImageSolveService {
             }
         }
 
-        throw new IllegalArgumentException("无法识别图片格式，仅支持 jpg、jpeg、png、webp、gif");
+        throw new IllegalArgumentException(
+                "无法识别图片格式，仅支持 jpg、jpeg、png、webp、gif、bmp、tiff");
     }
 
     /**
@@ -470,11 +488,24 @@ public class ImageSolveService {
      */
     private MimeType normalizeImageMimeType(MimeType mimeType) {
         String subtype = mimeType.getSubtype().toLowerCase(Locale.ROOT);
-        if ("jpg".equals(subtype) || "pjpeg".equals(subtype)) {
+        if ("jpg".equals(subtype) || "pjpeg".equals(subtype) || "x-jpg".equals(subtype)) {
             return MimeType.valueOf("image/jpeg");
         }
+        if ("tif".equals(subtype) || "x-tiff".equals(subtype)) {
+            subtype = "tiff";
+        }
+        if ("x-ms-bmp".equals(subtype) || "x-bmp".equals(subtype)) {
+            subtype = "bmp";
+        }
+        if ("x-png".equals(subtype)) {
+            subtype = "png";
+        }
+        if ("x-webp".equals(subtype)) {
+            subtype = "webp";
+        }
         if (!SUPPORTED_IMAGE_SUBTYPES.contains(subtype)) {
-            throw new IllegalArgumentException("仅支持 jpg、jpeg、png、webp、gif 格式的图片");
+            throw new IllegalArgumentException(
+                    "仅支持 jpg、jpeg、png、webp、gif、bmp、tiff 格式的图片");
         }
         return MimeType.valueOf("image/" + subtype);
     }
