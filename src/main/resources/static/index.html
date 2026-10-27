@@ -1,0 +1,396 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0f766e">
+  <meta name="description" content="几何助手：拍摄或上传一张几何题图片，快速查看清晰的内容解析。">
+  <meta name="application-name" content="几何助手">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="几何助手">
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="icon" href="icons/icon-192.png" sizes="192x192" type="image/png">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="stylesheet" href="css/vendor/katex.min.css?v=1.0.13">
+  <link rel="stylesheet" href="css/app.css?v=1.0.13">
+  <title>几何助手 · 图片解析</title>
+</head>
+<body>
+  <a class="skip-link" href="#main">跳到主要内容</a>
+
+  <div class="backdrop" aria-hidden="true">
+    <div class="backdrop__grid"></div>
+    <div class="backdrop__orb backdrop__orb--one"></div>
+    <div class="backdrop__orb backdrop__orb--two"></div>
+  </div>
+
+  <div id="offlineBar" class="offline-bar" role="status" aria-live="polite" hidden>
+    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <path d="M3.6 8.4a14.2 14.2 0 0 1 16.8 0M6.8 12a9.2 9.2 0 0 1 10.4 0M10.1 15.5a4.1 4.1 0 0 1 3.8 0M12 19h.01"/>
+      <path d="m3 3 18 18"/>
+    </svg>
+    <span>当前离线</span>
+    <span class="offline-bar__hint">当前网络不可用，请联网后重试</span>
+  </div>
+
+  <header class="topbar">
+    <a class="brand" href="./" aria-label="几何助手首页">
+      <span class="brand__mark" aria-hidden="true">
+        <svg viewBox="0 0 512 512" focusable="false">
+          <defs>
+            <linearGradient id="brand-bg" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0" stop-color="#14968b"/>
+              <stop offset="1" stop-color="#084a46"/>
+            </linearGradient>
+          </defs>
+          <rect width="512" height="512" rx="112" fill="url(#brand-bg)"/>
+          <path d="M256 94 128 364h256Z" fill="none" stroke="#fff" stroke-width="23"/>
+          <circle cx="256" cy="280" r="60" fill="none" stroke="#f0b35b" stroke-width="18"/>
+          <circle cx="256" cy="280" r="10" fill="#f0b35b"/>
+        </svg>
+      </span>
+      <span class="brand__text">
+        <strong>几何助手</strong>
+        <small>Geometry Helper</small>
+      </span>
+    </a>
+
+    <div class="topbar__actions">
+      <div id="serviceStatus" class="status-pill status-pill--checking" role="status" aria-live="polite">
+        <span class="status-pill__dot" aria-hidden="true"></span>
+        <span id="serviceStatusText">检查服务中</span>
+        <span id="serviceStatusTime" class="status-pill__time" hidden></span>
+      </div>
+      <button id="installButton" class="button button--ghost button--install" type="button" hidden>
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path d="M12 3v12m0 0 4-4m-4 4-4-4M5 15v4a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4"/>
+        </svg>
+        <span>安装应用</span>
+      </button>
+    </div>
+  </header>
+
+  <main id="main" class="page" tabindex="-1">
+    <section class="hero" aria-labelledby="pageTitle">
+      <div class="hero__copy">
+        <p class="eyebrow">GEOMETRY HELPER · PWA</p>
+        <h1 id="pageTitle">把几何题拍下来，<span>交给几何助手。</span></h1>
+        <p class="hero__lead">拍摄或上传需要解析的几何题，确认预览后上传，稍候即可查看清晰的内容说明。</p>
+        <ul class="hero__facts" aria-label="产品特点">
+          <li>
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <rect x="3" y="4" width="18" height="12" rx="3"/>
+              <path d="M8 20h8M12 16v4"/>
+            </svg>
+            手机、平板、电脑都能用
+          </li>
+          <li>
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <rect x="4" y="3" width="16" height="18" rx="3"/>
+              <path d="M9 17h6"/>
+            </svg>
+            可安装到桌面
+          </li>
+        </ul>
+      </div>
+
+      <div class="hero__art" aria-hidden="true">
+        <svg viewBox="0 0 460 340" focusable="false">
+          <defs>
+            <linearGradient id="art-stroke" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0" stop-color="#0f766e" stop-opacity=".88"/>
+              <stop offset="1" stop-color="#0f766e" stop-opacity=".18"/>
+            </linearGradient>
+            <linearGradient id="art-fill" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0" stop-color="#ffffff" stop-opacity=".82"/>
+              <stop offset="1" stop-color="#ffffff" stop-opacity=".28"/>
+            </linearGradient>
+          </defs>
+          <rect x="18" y="22" width="424" height="296" rx="38" fill="url(#art-fill)" stroke="#ffffff" stroke-opacity=".72"/>
+          <g fill="none" stroke="url(#art-stroke)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M76 258 230 62l154 196H76Z"/>
+            <circle cx="230" cy="184" r="62"/>
+            <path d="M230 62v122l-92 74M230 184l108 74M138 258h184"/>
+            <path d="M67 99h44M89 77v44M359 87l30-30M374 57h15v15"/>
+            <path d="M78 292h66M360 292h30"/>
+          </g>
+          <g fill="#0f766e">
+            <circle cx="230" cy="62" r="6"/>
+            <circle cx="76" cy="258" r="5"/>
+            <circle cx="384" cy="258" r="5"/>
+            <circle cx="230" cy="184" r="5" fill="#e0a23b"/>
+          </g>
+          <g fill="#0f766e" font-family="ui-monospace, SFMono-Regular, Consolas, monospace" font-size="12" opacity=".6">
+            <text x="292" y="76">r</text>
+            <text x="218" y="238">O</text>
+          </g>
+        </svg>
+      </div>
+    </section>
+
+    <div class="workspace">
+      <section id="uploadCard" class="card upload-card" aria-labelledby="uploadTitle" aria-busy="false">
+        <div class="card__head">
+          <div>
+            <p class="step-label"><span>01</span> 上传题目</p>
+            <h2 id="uploadTitle">选择一张几何题图片</h2>
+            <p class="card__sub">支持 JPG、PNG、WebP、GIF，单张不超过 10MB。</p>
+          </div>
+          <span id="uploadStateBadge" class="state-badge state-badge--idle">等待选择</span>
+        </div>
+
+        <div id="inlineError" class="inline-error" role="alert" hidden></div>
+
+        <div id="chooser" class="chooser">
+          <div class="choice-grid">
+            <button id="cameraButton" class="choice" type="button">
+              <span class="choice__icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" focusable="false">
+                  <path d="M4 8.5A2.5 2.5 0 0 1 6.5 6h1.2l1.1-1.6A1.5 1.5 0 0 1 10 3.7h4a1.5 1.5 0 0 1 1.2.7L16.3 6h1.2A2.5 2.5 0 0 1 20 8.5v8A2.5 2.5 0 0 1 17.5 19h-11A2.5 2.5 0 0 1 4 16.5v-8Z"/>
+                  <circle cx="12" cy="12.5" r="3.5"/>
+                </svg>
+              </span>
+              <span class="choice__body">
+                <strong>拍照</strong>
+                <small>调起相机拍摄题目</small>
+              </span>
+              <span class="choice__arrow" aria-hidden="true">
+                <svg viewBox="0 0 24 24" focusable="false"><path d="m9 18 6-6-6-6"/></svg>
+              </span>
+            </button>
+
+            <button id="albumButton" class="choice" type="button">
+              <span class="choice__icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" focusable="false">
+                  <rect x="3" y="4" width="18" height="16" rx="3"/>
+                  <circle cx="8.5" cy="9.5" r="1.6"/>
+                  <path d="m4 17 5.2-5.2a2 2 0 0 1 2.8 0l2.4 2.4 1.4-1.4a2 2 0 0 1 2.8 0L21 15.5"/>
+                </svg>
+              </span>
+              <span class="choice__body">
+                <strong>从相册选择</strong>
+                <small>选择已有的题目图片</small>
+              </span>
+              <span class="choice__arrow" aria-hidden="true">
+                <svg viewBox="0 0 24 24" focusable="false"><path d="m9 18 6-6-6-6"/></svg>
+              </span>
+            </button>
+          </div>
+
+          <div id="dropHint" class="drop-hint">
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path d="M12 16V4m0 0 4 4m-4-4L8 8"/>
+              <path d="M4 14v4a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4"/>
+            </svg>
+            <span>也可以把图片拖到这里</span>
+          </div>
+
+          <input id="cameraInput" type="file" accept="image/*" capture="environment" hidden>
+          <input id="albumInput" type="file" accept="image/jpeg,image/jpg,image/png,image/webp,image/gif" hidden>
+        </div>
+
+        <div id="previewPanel" class="preview-panel" hidden>
+          <div class="preview-frame">
+            <button id="previewButton" class="preview-button" type="button" aria-label="查看已选图片大图">
+              <img id="previewImage" alt="已选择的几何题图片">
+              <span class="preview-button__hint">点击图片可查看大图</span>
+            </button>
+          </div>
+
+          <div class="file-meta">
+            <span id="fileSize" class="file-meta__size"></span>
+          </div>
+
+          <div class="note-field">
+            <label class="note-field__label" for="userNote">补充说明（可选）</label>
+            <textarea id="userNote" class="note-field__input" rows="2" maxlength="500" placeholder="例如：第 2 问只需要写出过程。"></textarea>
+          </div>
+
+          <div class="preview-actions">
+            <button id="reselectButton" class="button button--secondary" type="button">重新选择</button>
+            <button id="uploadButton" class="button button--primary" type="button">
+              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="M12 16V4m0 0 4 4m-4-4L8 8"/>
+                <path d="M4 14v4a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4"/>
+              </svg>
+              <span id="uploadButtonText">上传图片</span>
+            </button>
+            <button id="nextQuestionButton" class="button button--secondary" type="button" title="刷新页面，开始下一题">
+              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="M20 12a8 8 0 1 1-2.3-5.6M20 4v5h-5"/>
+              </svg>
+              <span>下一题</span>
+            </button>
+          </div>
+
+          <input id="reselectInput" type="file" accept="image/*" hidden>
+        </div>
+
+        <div id="uploadProgress" class="upload-progress" aria-live="polite" hidden>
+          <div class="upload-progress__top">
+            <span class="spinner" aria-hidden="true"></span>
+            <div class="upload-progress__copy">
+              <strong id="progressTitle">正在识别，请稍候…</strong>
+              <p id="progressHint">正在读取题目和补充说明，请不要关闭页面。</p>
+            </div>
+            <span id="elapsedTime" class="elapsed-time" aria-hidden="true">00:00</span>
+          </div>
+          <div class="progress-track" aria-hidden="true"><span></span></div>
+        </div>
+      </section>
+
+      <aside class="card side-card" aria-labelledby="stepsTitle">
+        <p class="step-label"><span>02</span> 使用方式</p>
+        <h2 id="stepsTitle">四步完成</h2>
+        <ol class="steps">
+          <li>
+            <span class="steps__num">1</span>
+            <div>
+              <strong>选择图片</strong>
+              <p>拍照或从相册选择一张几何题图片。</p>
+            </div>
+          </li>
+          <li>
+            <span class="steps__num">2</span>
+            <div>
+              <strong>核对题目</strong>
+              <p>查看题目复述，核对条件与目标是否一致。</p>
+            </div>
+          </li>
+          <li>
+            <span class="steps__num">3</span>
+            <div>
+              <strong>分步讲解</strong>
+              <p>像老师一样，一段一段展开，留出思考时间。</p>
+            </div>
+          </li>
+          <li>
+            <span class="steps__num">4</span>
+            <div>
+              <strong>继续思考</strong>
+              <p>先想一想，再点“继续讲解”查看下一步。</p>
+            </div>
+          </li>
+        </ol>
+
+        <div class="side-note">
+          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="M12 3 3.8 6.5v5.7c0 4.5 3.4 8.2 8.2 9.3 4.8-1.1 8.2-4.8 8.2-9.3V6.5L12 3Z"/>
+            <path d="M12 8v4m0 3h.01"/>
+          </svg>
+          <p><strong>小提示</strong> 尽量保持题目完整、画面清晰，识别效果会更好。</p>
+        </div>
+      </aside>
+    </div>
+
+    <section id="confirmSection" class="card confirm-card" aria-labelledby="confirmTitle" hidden>
+      <div class="result-card__head">
+        <div>
+          <p class="step-label"><span>03</span> 题目核对</p>
+          <h2 id="confirmTitle">题目复述</h2>
+        </div>
+        <span id="confirmBadge" class="state-badge state-badge--loading">待核对</span>
+      </div>
+
+      <p id="confirmMeta" class="result-meta"></p>
+      <div id="confirmAlert" class="result-alert" role="alert" hidden></div>
+      <div id="confirmMarkdown" class="markdown" hidden></div>
+
+      <div id="confirmActions" class="result-actions">
+        <button id="startSolveButton" class="button button--primary" type="button">
+          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="M5 12l4 4L19 6"/>
+          </svg>
+          <span>确认无误，开始讲解</span>
+        </button>
+        <button id="retryAnalysisButton" class="button button--secondary" type="button">重新识别</button>
+        <button id="confirmReselectButton" class="button button--ghost" type="button">重新选择图片</button>
+      </div>
+    </section>
+
+    <section id="resultSection" class="card result-card" aria-labelledby="resultTitle" hidden>
+      <div class="result-card__head">
+        <div>
+          <p class="step-label"><span>04</span> 分步讲解</p>
+          <h2 id="resultTitle">分步讲解</h2>
+        </div>
+        <span id="resultBadge" class="state-badge state-badge--success">成功</span>
+      </div>
+
+      <p id="resultMeta" class="result-meta"></p>
+      <div id="resultAlert" class="result-alert" role="alert" hidden></div>
+
+      <div id="markdownResult" class="solve-parts" hidden></div>
+
+      <div id="emptyResult" class="empty-state" hidden>
+        <span class="empty-state__icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" focusable="false">
+            <path d="M5 4h14v16H5z"/>
+            <path d="M8 8h8M8 12h6M8 16h4"/>
+          </svg>
+        </span>
+        <h3>系统未返回内容</h3>
+        <p>可以重试当前步骤；如果多次失败，请检查网络后稍后再试。</p>
+      </div>
+
+      <div id="errorResult" class="error-state" hidden>
+        <span class="error-state__icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" focusable="false">
+            <circle cx="12" cy="12" r="9"/>
+            <path d="M12 7.5v5.5m0 3h.01"/>
+          </svg>
+        </span>
+        <div>
+          <h3>讲解未完成</h3>
+          <p>可以直接重试当前步骤；如果多次失败，请检查网络后稍后再试。</p>
+        </div>
+      </div>
+
+      <div id="resultActions" class="result-actions" hidden>
+        <button id="continueSolveButton" class="button button--primary" type="button" hidden>
+          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="M5 12h14m-6-6 6 6-6 6"/>
+          </svg>
+          <span id="continueSolveText">继续讲解</span>
+        </button>
+        <button id="retryButton" class="button button--primary" type="button">
+          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="M20 12a8 8 0 1 1-2.3-5.6M20 4v5h-5"/>
+          </svg>
+          <span>重试</span>
+        </button>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <p>几何助手 · 图片内容由 AI 生成，请自行核对。</p>
+    <p>添加到主屏幕后，可以像应用一样打开。</p>
+  </footer>
+
+  <dialog id="previewDialog" class="preview-dialog" aria-labelledby="previewDialogTitle">
+    <div class="preview-dialog__inner">
+      <div class="preview-dialog__bar">
+        <h2 id="previewDialogTitle">图片预览</h2>
+        <button id="closePreviewButton" class="icon-button" type="button" aria-label="关闭大图">
+          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="m6 6 12 12M18 6 6 18"/>
+          </svg>
+        </button>
+      </div>
+      <div class="preview-dialog__canvas">
+        <img id="dialogImage" alt="几何题图片大图">
+      </div>
+    </div>
+  </dialog>
+
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+
+  <script src="js/vendor/marked.min.js?v=1.0.13"></script>
+  <script src="js/vendor/purify.min.js?v=1.0.13"></script>
+  <script src="js/vendor/katex.min.js?v=1.0.13"></script>
+  <script src="js/app.js?v=1.0.13"></script>
+</body>
+</html>
