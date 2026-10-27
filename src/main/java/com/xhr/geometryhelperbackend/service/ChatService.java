@@ -21,9 +21,9 @@ import org.springframework.util.StringUtils;
 /**
  * 普通文本对话服务。
  *
- * <p>该服务只使用 {@code chatChatClient}，与图片理解使用的
- * {@code visionChatClient} 完全独立。两个引擎可以分别配置不同的供应商、
- * API Key、模型和超时时间。</p>
+ * <p>该服务只使用 {@code chatChatClient}，与图片识别使用的
+ * {@code visionChatClient}、正式解题使用的 {@code solveChatClient} 完全独立。
+ * 三个引擎可以分别配置不同的供应商、API Key、模型和超时时间。</p>
  *
  * <p>支持两种调用方式：</p>
  * <ul>

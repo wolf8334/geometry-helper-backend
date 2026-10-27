@@ -3,11 +3,17 @@ package com.xhr.geometryhelperbackend.dto;
 /**
  * {@code POST /api/solve} 的响应体。
  *
- * <p>字段名严格按照接口约定：{@code msg} 固定为“图片上传成功”，
- * {@code answer} 为大模型返回的图片内容描述。</p>
+ * <p>该接口分阶段返回：{@code stage=confirm} 时返回题目复述，等待用户核对；
+ * {@code stage=part} 时返回当前段落的讲解内容。</p>
  *
- * @param msg    上传结果说明
- * @param answer 大模型返回的图片内容描述
+ * @param msg        阶段说明
+ * @param stage      当前阶段，{@code confirm} 或 {@code part}
+ * @param analysis   题目复述（确认阶段）
+ * @param answer     当前段落的讲解内容（分步讲解阶段）
+ * @param part       当前讲解段落，从 1 开始；确认阶段为 0
+ * @param totalParts 分步讲解总段数
+ * @param done       分步讲解是否已经全部完成
  */
-public record SolveResponse(String msg, String answer) {
+public record SolveResponse(String msg, String stage, String analysis, String answer,
+        int part, int totalParts, boolean done) {
 }

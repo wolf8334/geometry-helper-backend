@@ -1,16 +1,21 @@
 package com.xhr.geometryhelperbackend.service;
 
 import java.io.IOException;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
+import com.anthropic.models.messages.ContentBlock;
+import com.anthropic.models.messages.Message;
 import com.xhr.geometryhelperbackend.config.AiConfig;
 import com.xhr.geometryhelperbackend.config.AiProperties;
 import com.xhr.geometryhelperbackend.exception.AiServiceException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.model.ChatResponse;
+import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.content.Media;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
@@ -19,10 +24,15 @@ import org.springframework.util.StringUtils;
 import org.springframework.web.multipart.MultipartFile;
 
 /**
- * 图片理解业务服务。
+ * 图片识别与正式解题业务服务。
  *
- * <p>职责：把上传的图片转换成 Spring AI 的 {@link Media}，连同提示词发送给
- * 多模态大模型，并返回模型生成的文本描述。</p>
+ * <p>职责分为两个阶段：</p>
+ * <ol>
+ *     <li>识别阶段：把上传的图片转换成 Spring AI 的 {@link Media}，发送给
+ *     {@code visionChatClient}，只复述题目内容；</li>
+ *     <li>解题阶段：把用户确认后的题目复述、已经输出的讲解段落连同原图发送给
+ *     独立的 {@code solveChatClient}，由解题模型像老师一样分步展开。</li>
+ * </ol>
  *
  * <p>这里选择“一次性读取到内存”的方式，原因是当前上传上限只有 10MB，
  * 且 Spring AI 的 {@code Media} 需要拿到完整字节或 Resource。若后续要支持
@@ -51,76 +61,368 @@ public class ImageSolveService {
      */
     private static final Set<String> SUPPORTED_IMAGE_SUBTYPES = Set.of("jpeg", "png", "webp", "gif");
 
-    private final ChatClient chatClient;
+    /**
+     * 用户补充说明的最大字符数，避免超长文本撑大提示词。
+     */
+    private static final int MAX_USER_NOTE_LENGTH = 500;
+
+    /**
+     * 当前分步讲解的总段数。后续增加追问功能时，段数仍由这里统一控制。
+     */
+    private static final int SOLVE_TOTAL_PARTS = 3;
+
+    /**
+     * 已输出讲解内容的最大字符数，防止异常请求把提示词无限放大。
+     */
+    private static final int MAX_SOLVE_CONTEXT_LENGTH = 60_000;
+
+    private final ChatClient visionChatClient;
+
+    private final ChatClient solveChatClient;
 
     private final AiProperties aiProperties;
 
-    public ImageSolveService(@Qualifier(AiConfig.VISION_CHAT_CLIENT) ChatClient chatClient,
+    public ImageSolveService(
+            @Qualifier(AiConfig.VISION_CHAT_CLIENT) ChatClient visionChatClient,
+            @Qualifier(AiConfig.SOLVE_CHAT_CLIENT) ChatClient solveChatClient,
             AiProperties aiProperties) {
-        this.chatClient = chatClient;
+        this.visionChatClient = visionChatClient;
+        this.solveChatClient = solveChatClient;
         this.aiProperties = aiProperties;
     }
 
     /**
-     * 调用多模态大模型描述图片内容。
+     * 第一步：识别并复述题目，供用户核对。不输出解题计划或最终答案。
      *
-     * @param file 上传的图片文件，字段名由 Controller 约定为 {@code file}
-     * @return 大模型返回的图片内容描述
-     * @throws IllegalArgumentException 文件为空或不是受支持的图片格式
-     * @throws AiServiceException      读取文件失败或大模型调用失败
+     * @param file     上传的图片
+     * @param userNote 用户补充说明，可为空
+     * @return 题目复述
      */
-    public String describeImage(MultipartFile file) {
-        if (file == null || file.isEmpty()) {
+    public String analyzeImage(MultipartFile file, String userNote) {
+        return callVisionModel(file, buildAnalyzeText(userNote, false), "题目识别");
+    }
+
+    /**
+     * 用户认为识别有误时，重新识别并复述题目。不输出解题计划或最终答案。
+     *
+     * @param file     上传的图片
+     * @param userNote 用户补充说明，可为空
+     * @return 重新识别后的题目复述
+     */
+    public String retryAnalyzeImage(MultipartFile file, String userNote) {
+        return callVisionModel(file, buildAnalyzeText(userNote, true), "重新识别");
+    }
+
+    /**
+     * 第二步：用户确认题目复述后，生成指定段落的分步讲解。
+     *
+     * <p>每次只让模型生成一段，并把题目复述、用户补充说明以及已经生成的
+     * 前文一起送入解题引擎。这样后续追问也可以复用同一份上下文。</p>
+     *
+     * <p>默认会把原图一并发送给解题模型，方便模型重新核对图形信息；
+     * 如果解题模型只支持文本，可在配置中设置
+     * {@code app.ai.solve.include-image=false} 关闭图片。</p>
+     *
+     * @param file     上传的图片，可为空
+     * @param userNote 用户补充说明，可为空
+     * @param analysis 用户已确认的题目复述
+     * @param part     当前要生成的段落，从 1 开始
+     * @param history  已经生成的讲解内容，可为空
+     * @return 当前段落的讲解内容
+     */
+    public String solveImage(MultipartFile file, String userNote, String analysis,
+            int part, String history) {
+        if (!StringUtils.hasText(analysis)) {
+            throw new IllegalArgumentException("请先确认题目复述，再开始解题");
+        }
+        if (part < 1 || part > SOLVE_TOTAL_PARTS) {
+            throw new IllegalArgumentException("讲解段落必须在 1 到 " + SOLVE_TOTAL_PARTS + " 之间");
+        }
+
+        MultipartFile solveFile = this.aiProperties.getSolve().isIncludeImage() ? file : null;
+        return callChatModel(this.solveChatClient, solveFile,
+                buildSolveText(userNote, analysis, part, history),
+                "分步解题第" + part + "段", false);
+    }
+
+    /**
+     * 当前分步讲解的总段数，供接口层返回给前端。
+     *
+     * @return 总段数
+     */
+    public int getSolveTotalParts() {
+        return SOLVE_TOTAL_PARTS;
+    }
+
+    /**
+     * 读取图片并调用视觉理解模型。
+     *
+     * @param file     上传的图片
+     * @param userText 发送给模型的完整用户文本
+     * @param operation 当前阶段名称，用于日志
+     * @return 模型返回的内容
+     */
+    private String callVisionModel(MultipartFile file, String userText, String operation) {
+        return callChatModel(this.visionChatClient, file, userText, operation, true);
+    }
+
+    /**
+     * 调用指定 ChatClient，可选携带图片。
+     *
+     * <p>对 Anthropic 原生响应优先直接读取 text block，避免 Spring AI
+     * 多 generation（例如 thinking 块在前）时只取第一条 generation 导致正文为空。</p>
+     *
+     * @param chatClient  模型客户端
+     * @param file        图片，可为空
+     * @param userText    用户文本
+     * @param operation   当前阶段名称，用于日志
+     * @param requireImage 是否强制要求图片
+     * @return 模型返回的文本
+     */
+    private String callChatModel(ChatClient chatClient, MultipartFile file, String userText,
+            String operation, boolean requireImage) {
+        boolean hasImage = file != null && !file.isEmpty();
+        if (requireImage && !hasImage) {
             throw new IllegalArgumentException("上传文件不能为空");
         }
 
-        // 1. 解析并校验 MIME 类型。不能只相信客户端传来的 Content-Type，
-        //    因此 Content-Type 缺失或不合法时再根据扩展名兜底。
-        MimeType mimeType = resolveMimeType(file);
-        if (!"image".equalsIgnoreCase(mimeType.getType())) {
-            throw new IllegalArgumentException("只支持图片文件，当前文件类型为：" + mimeType);
-        }
+        MimeType mimeType = null;
+        byte[] imageBytes = null;
+        if (hasImage) {
+            // 1. 解析并校验 MIME 类型。不能只相信客户端传来的 Content-Type，
+            //    因此 Content-Type 缺失或不合法时再根据扩展名兜底。
+            mimeType = resolveMimeType(file);
+            if (!"image".equalsIgnoreCase(mimeType.getType())) {
+                throw new IllegalArgumentException("只支持图片文件，当前文件类型为：" + mimeType);
+            }
 
-        // 2. 读取图片字节。MultipartFile 的临时文件会在请求结束后被清理，
-        //    所以必须在请求线程内完成读取。
-        byte[] imageBytes;
-        try {
-            imageBytes = file.getBytes();
-        } catch (IOException exception) {
-            log.error("image read failed file={}", file.getOriginalFilename(), exception);
-            throw new AiServiceException("读取上传图片失败，请稍后重试", exception);
+            // 2. 读取图片字节。MultipartFile 的临时文件会在请求结束后被清理，
+            //    所以必须在请求线程内完成读取。
+            try {
+                imageBytes = file.getBytes();
+            } catch (IOException exception) {
+                log.error("读取上传图片失败 文件名 {}", file.getOriginalFilename(), exception);
+                throw new AiServiceException("读取上传图片失败，请稍后重试", exception);
+            }
         }
 
         // 3. 构造 Spring AI 多媒体对象。Media 内部会把字节转换成模型需要的
         //    base64 data URL（由具体模型实现负责）。
-        Media imageMedia = Media.builder().mimeType(mimeType).data(imageBytes).build();
+        Media imageMedia = hasImage
+                ? Media.builder().mimeType(mimeType).data(imageBytes).build()
+                : null;
 
+        log.info("{} 开始调用模型 带图片={}", operation, hasImage);
         long startNanos = System.nanoTime();
         try {
-            // 4. 发送“用户提示词 + 图片”。系统提示词已在 AiConfig 中设置为默认值。
-            String answer = this.chatClient.prompt()
-                    .user(userSpec -> userSpec
-                            .text(this.aiProperties.getVision().getUserPrompt())
-                            .media(imageMedia))
+            // 4. 发送“系统提示词 + 用户文本 + 可选图片”。
+            ChatResponse response = chatClient.prompt()
+                    .user(userSpec -> {
+                        userSpec.text(userText);
+                        if (imageMedia != null) {
+                            userSpec.media(imageMedia);
+                        }
+                    })
                     .call()
-                    .content();
+                    .chatResponse();
+
+            String answer = extractAnswer(operation, response);
             if (!StringUtils.hasText(answer)) {
                 throw new AiServiceException("大模型未返回有效内容，请稍后重试");
             }
 
             long costMillis = (System.nanoTime() - startNanos) / 1_000_000;
-            log.info("image solve ok file={} size={}B mime={} cost={}ms",
-                    file.getOriginalFilename(), imageBytes.length, mimeType, costMillis);
+            log.info("{} 模型调用完成 带图片={} 文件大小={}KB 耗时={}s",
+                    operation, hasImage,
+                    imageBytes == null ? 0 : imageBytes.length / 1024,
+                    costMillis / 1000);
             return answer.trim();
         } catch (AiServiceException exception) {
             // 保留业务异常的原始信息，避免被下面的通用捕获再次包装。
             throw exception;
         } catch (Exception exception) {
             long costMillis = (System.nanoTime() - startNanos) / 1_000_000;
-            log.error("image solve failed file={} size={}B cost={}ms",
-                    file.getOriginalFilename(), imageBytes.length, costMillis, exception);
+            log.error("{} 模型调用失败 带图片={} 耗时={}s",
+                    operation, hasImage, costMillis / 1000, exception);
             throw new AiServiceException("大模型服务调用失败，请检查 API Key、模型名称或网络后重试", exception);
         }
+    }
+
+    /**
+     * 从响应中提取正文。Anthropic 原生响应直接读取 text block；
+     * 其他协议回退到最后一个非空 generation。
+     */
+    private String extractAnswer(String operation, ChatResponse response) {
+        if (response == null) {
+            return "";
+        }
+
+        Object rawResponse = response.getMetadata() == null
+                ? null
+                : response.getMetadata().get("anthropic-response");
+        if (rawResponse instanceof Message message) {
+            StringBuilder text = new StringBuilder();
+            for (ContentBlock block : message.content()) {
+                if (block.isText()) {
+                    text.append(block.asText().text());
+                }
+            }
+            if (StringUtils.hasText(text)) {
+                return text.toString();
+            }
+            log.warn("{} Anthropic 响应没有有效 text block，stopReason={} contentBlockCount={}",
+                    operation, message.stopReason().orElse(null), message.content().size());
+            return "";
+        }
+
+        List<Generation> results = response.getResults();
+        for (int index = results.size() - 1; index >= 0; index -= 1) {
+            Generation generation = results.get(index);
+            if (generation != null && generation.getOutput() != null
+                    && StringUtils.hasText(generation.getOutput().getText())) {
+                return generation.getOutput().getText();
+            }
+        }
+        return "";
+    }
+
+    /**
+     * 组装视觉阶段的系统提示词和用户补充说明。用户输入永远追加在系统组织的内容之后。
+     */
+    private String buildBaseText(String userNote) {
+        String basePrompt = this.aiProperties.getVision().getUserPrompt();
+        String note = normalizeUserNote(userNote);
+        return note.isEmpty() ? basePrompt : basePrompt + "\n\n用户补充说明：\n" + note;
+    }
+
+    /**
+     * 去除补充说明首尾空白并校验长度。两个阶段共用同一套限制。
+     */
+    private String normalizeUserNote(String userNote) {
+        if (!StringUtils.hasText(userNote)) {
+            return "";
+        }
+        String note = userNote.trim();
+        if (note.length() > MAX_USER_NOTE_LENGTH) {
+            throw new IllegalArgumentException("补充说明不能超过 " + MAX_USER_NOTE_LENGTH + " 个字");
+        }
+        return note;
+    }
+
+    /**
+     * 构造题目识别阶段的用户文本。该阶段只复述题目，不输出解题计划。
+     */
+    private String buildAnalyzeText(String userNote, boolean retry) {
+        String intro = retry
+                ? """
+                        用户认为上一次的题目识别不准确。请重新独立阅读图片，并结合用户补充说明，重新复述题目。
+                        不要沿用上一次的错误理解。如果仍然看不清，请只在复述中注明无法辨认的信息，不要猜测。
+                        """
+                : """
+                        现在开始新的任务：题目复述。本段要求优先于前面的图片描述要求。
+                        请仔细阅读图片和用户补充说明，只复述题目，不要开始解题，不要输出解题计划，
+                        不要询问用户是否确认，也不要输出“需要确认”之类的部分。
+                        """;
+        return buildBaseText(userNote) + "\n\n" + intro + """
+
+                请严格按以下结构输出：
+                ## 题目复述
+                写出已知条件、要求解或证明的目标，以及图中关键信息。
+                只复述题目本身，不要分析解法，不要给出最终答案。
+
+                数学公式必须使用 LaTeX，并且能被 KaTeX 正常渲染：
+                - 行内公式用 $...$，例如 $AB=AC$；
+                - 独立公式用 $$...$$，例如 $$S=\\frac{1}{2}ah$$；
+                - 几何符号使用标准命令，如 \\angle、\\triangle、\\frac、\\sqrt、\\boxed；
+                - 不要用 Unicode 上下标或纯文本替代公式。
+                """;
+    }
+
+    /**
+     * 构造分步讲解阶段的用户文本。
+     *
+     * <p>每次只要求模型输出当前段落，并把已经输出的段落作为上下文一起发送，
+     * 既避免一次把答案全部倒给学生，也为后续追问保留完整的对话前文。</p>
+     */
+    private String buildSolveText(String userNote, String analysis, int part, String history) {
+        String note = normalizeUserNote(userNote);
+        String noteBlock = note.isEmpty() ? "" : "用户补充说明：\n" + note + "\n\n";
+        String historyBlock = normalizeSolveHistory(history);
+        String knowledgeScope = normalizeKnowledgeScope(
+                this.aiProperties.getSolve().getKnowledgeScope());
+        String stageInstruction = switch (part) {
+            case 1 -> """
+                    这一轮只输出第 1 段：先点明题目中的关键条件和目标，再用一两句提示引导学生找到切入点；
+                    然后只完成起步的一步（例如确定思路、作辅助线或列出第一个关系式），
+                    停在下一段会继续讲的位置。不要向用户提问，不要要求学生回答、写出来或告诉任何人；
+                    不要提前输出后续完整推导，不要给出最终答案。
+                    """;
+            case 2 -> """
+                    这一轮只输出第 2 段：承接前文和学生已经思考过的内容，继续完成中间的核心推导。
+                    拆成两到四个清晰的小步骤，每一步写清楚依据、公式和计算；
+                    在关键处用一句简短提示点出思考方向，但不要向用户提问，也不要要求用户回答或写出结果；
+                    不要提前给出最终答案。
+                    """;
+            default -> """
+                    这一轮只输出第 3 段：承接前文完成剩余的推导，最后给出明确的结论或答案，
+                    并用一两句话回顾关键思路或检验结果。不要重复前两段已经讲过的内容。
+                    """;
+        };
+
+        return noteBlock
+                + "用户已确认以下题目复述，这是本次解题的唯一题目依据：\n"
+                + analysis.trim()
+                + "\n\n"
+                + (historyBlock.isEmpty() ? "" : "本次讲解已经输出的前文如下，必须承接它，不要重复：\n"
+                        + historyBlock + "\n\n")
+                + "现在开始讲解第 " + part + " / " + SOLVE_TOTAL_PARTS + " 段。\n"
+                + stageInstruction
+                + """
+
+                通用要求：
+                1. 本段的分步要求优先于系统提示词中“给出完整解题过程或结论”的要求，
+                   非最后一段不要提前给出最终答案，也不要一次把整道题讲完；
+                2. 你是一位循循善诱的老师，先提示思考方向，再逐步揭开答案；
+                3. 这是单向分页讲解，用户当前不能随时追问。不要出现“写出来告诉我”“你来说说”
+                   “回答我”“试试后告诉我”等邀请用户回复的话术，也不要等待用户回复；
+                   需要留思考空间时，用“先想一想”即可，下一段会继续讲解；
+                4. 讲解必须符合当前允许的知识范围，不得使用超纲定理、超纲公式或超纲方法；
+                5. 每一步写清楚依据、公式、代入和计算，不得跳步，不使用“易知”“易得”“显然”等省略性表述；
+                6. 如果发现用户确认的题目复述有明显错误，请先简短指出，再按正确理解继续；
+                7. 不要输出“第 x / 3 段”之类的段落标题，直接输出本段讲解内容；
+                8. 使用简体中文和清晰的 Markdown 格式输出；
+                9. 数学公式必须使用 LaTeX，并且能被 KaTeX 正常渲染：
+                   行内公式用 $...$，独立公式用 $$...$$；
+                   几何符号使用标准命令，如 \\angle、\\triangle、\\frac、\\sqrt、\\boxed；
+                   不要用 Unicode 上下标或纯文本替代公式。
+
+                当前允许使用的知识范围：只允许使用「%s」范围内的知识。
+                超出这个范围的内容不要使用；如果题目确实无法在该范围内解决，
+                请明确说明缺少哪一类知识，不要改用超纲方法硬解。
+                """.formatted(knowledgeScope);
+    }
+
+    /**
+     * 规范化已输出的讲解前文，并限制长度。
+     */
+    private String normalizeSolveHistory(String history) {
+        if (!StringUtils.hasText(history)) {
+            return "";
+        }
+        String value = history.trim();
+        if (value.length() > MAX_SOLVE_CONTEXT_LENGTH) {
+            throw new IllegalArgumentException("已输出的讲解内容过长，请重新开始本次解题");
+        }
+        return value;
+    }
+
+    /**
+     * 规范化配置中的知识范围。配置为空时退回默认的初二数学范围。
+     */
+    private String normalizeKnowledgeScope(String knowledgeScope) {
+        return StringUtils.hasText(knowledgeScope)
+                ? knowledgeScope.trim()
+                : "国内初二数学知识";
     }
 
     /**

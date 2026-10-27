@@ -51,6 +51,15 @@
             <artifactId>spring-ai-starter-model-openai</artifactId>
         </dependency>
         <!--
+            Spring AI 的 Anthropic 原生协议客户端。
+            Ofox 等聚合平台在模型 ID 以 anthropic 开头时使用 Anthropic Messages
+            协议，AiConfig 会按 provider + model 自动选择该客户端。
+        -->
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-anthropic</artifactId>
+        </dependency>
+        <!--
             数据库访问基础依赖（DataSource、JdbcTemplate、事务等）。
             当前需求只要求接入 PostgreSQL 18 并设置 search_path=geometry，
             后续需要持久化时可以直接注入 JdbcTemplate 使用。

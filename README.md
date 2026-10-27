@@ -2,16 +2,17 @@
 
 基于 Spring Boot 4.1.2 + Spring AI 2.0.1 的几何助手后端。
 
-项目**同时运行两个独立的 AI 引擎**：
+项目**同时运行三个独立的 AI 引擎**：
 
 | 引擎 | 配置前缀 | 用途 | 模型要求 |
 | --- | --- | --- | --- |
-| 视觉理解引擎（VL / Vision） | `app.ai.vision` | `POST /api/solve` 图片理解 | 必须支持图片输入 |
+| 视觉理解引擎（VL / Vision） | `app.ai.vision` | `POST /api/solve` 题目复述 | 必须支持图片输入 |
+| 解题引擎（Solve） | `app.ai.solve` | `POST /api/solve` 分步讲解 | 建议支持图片输入 |
 | 普通对话引擎（Chat） | `app.ai.chat` | `POST /api/chat` 文本对话 | 纯文本模型即可 |
 
-两个引擎各自选择供应商和模型，可以同时使用不同供应商、不同 API Key、
-不同 endpoint。例如：视觉引擎用 Ofox 的 Vision 模型，对话引擎用硅基流动的
-文本模型。
+三个引擎各自选择供应商和模型，可以同时使用不同供应商、不同 API Key、
+不同 endpoint。例如：视觉引擎用 DeepSeek，解题引擎用 Ofox 的 Anthropic
+模型，对话引擎用成本更低的文本模型。
 
 ---
 
@@ -20,7 +21,7 @@
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | GET | `/api/ping` | 返回服务状态和当前服务器时间 |
-| POST | `/api/solve` | 接收 `multipart/form-data` 图片（字段名 `file`），调用视觉引擎 |
+| POST | `/api/solve` | 接收 `multipart/form-data` 图片（字段名 `file`），先复述题目，再分三段讲解 |
 | POST | `/api/chat` | 接收 JSON 文本消息，调用普通对话引擎，支持多轮历史 |
 
 ### 1. 健康检查
@@ -37,19 +38,43 @@
 时间格式说明：需求中的 `yyyy-mm-dd hh24:mi:ss` 是 Oracle 写法，Java 中对应
 `yyyy-MM-dd HH:mm:ss`，代码里使用 `DateTimeFormatter` 实现。
 
-### 2. 图片理解（视觉引擎）
+### 2. 题目复述与分步讲解（视觉引擎 + 解题引擎）
 
 `POST /api/solve`：
 
 - 请求类型：`multipart/form-data`
 - 文件字段：`file`
-- 使用的 Bean：`visionChatClient`
-- 成功后返回：
+- 文字字段：`message`、`stage`、`analysis`、`part`、`history`
+- 阶段：
+  - `analyze`（默认）：视觉引擎识别并复述题目，不输出解题计划，也不询问是否确认；
+  - `retry`：重新识别并复述题目；
+  - `confirm`：用户确认题目复述后，解题引擎生成第 1 段讲解；
+  - `continue`：携带 `analysis`、`part` 和已生成的 `history`，继续生成下一段。
+- 题目复述成功后的响应：
 
 ```json
 {
-  "msg": "图片上传成功",
-  "answer": "图片中是一个由三条边组成的三角形……"
+  "msg": "题目复述完成，请核对",
+  "stage": "confirm",
+  "analysis": "## 题目复述\n……",
+  "answer": null,
+  "part": 0,
+  "totalParts": 3,
+  "done": false
+}
+```
+
+- 分步讲解成功的响应：
+
+```json
+{
+  "msg": "已生成新内容，先想一想，再继续",
+  "stage": "part",
+  "analysis": null,
+  "answer": "### 先找切入点\n……",
+  "part": 1,
+  "totalParts": 3,
+  "done": false
 }
 ```
 
@@ -57,9 +82,10 @@
 
 1. Controller 接收 `MultipartFile`；
 2. Service 校验文件非空、MIME 类型为图片；
-3. 将图片字节封装为 Spring AI 的 `Media`；
-4. 使用 `visionChatClient` 把「用户提示词 + 图片」发送给多模态模型；
-5. 返回模型输出。
+3. 视觉阶段只生成题目复述，不提前给解题计划；
+4. 用户确认后，解题阶段每轮只生成一段，并把题目复述和已生成的前文一起发送；
+5. 第三段完成后返回 `done=true`；
+6. 解题提示词会注入 `app.ai.solve.knowledge-scope` 配置的知识范围，当前默认只允许使用国内初二数学知识。
 
 ### 3. 普通对话（对话引擎）
 
@@ -133,7 +159,7 @@
 src/main/java/com/xhr/geometryhelperbackend
 ├── GeometryHelperBackendApplication.java   # 启动类
 ├── config
-│   ├── AiConfig.java                       # 双引擎 ChatModel / ChatClient
+│   ├── AiConfig.java                       # 三引擎 ChatModel / ChatClient
 │   └── AiProperties.java                   # app.ai.* 配置绑定
 ├── controller
 │   ├── PingController.java                 # GET /api/ping
@@ -154,14 +180,14 @@ src/main/java/com/xhr/geometryhelperbackend
     └── ChatService.java                    # 文本对话 + 历史消息处理
 
 src/test/java/com/xhr/geometryhelperbackend
-└── GeometryHelperBackendApplicationTests.java  # 双 ChatClient 上下文测试
+└── GeometryHelperBackendApplicationTests.java  # 三引擎上下文与协议切换测试
 ```
 
 配置文件：
 
 ```text
 src/main/resources
-├── application.yaml                # 双引擎、双供应商、数据库、上传限制、日志级别
+├── application.yaml                # 三引擎、双供应商、数据库、上传限制、日志级别
 ├── logback-spring.xml              # 简洁日志格式、控制台 + 文件滚动
 └── db/init.sql                     # 可选的 schema 初始化脚本
 ```
@@ -180,7 +206,7 @@ src/main/resources
 > 如果命令行里的 `java -version` 和 `mvn -v` 显示的版本不一致，请先设置
 > `JAVA_HOME`，确保 Maven、IDE 和 `java -jar` 使用同一个 JDK。
 
-### 2. 双引擎配置
+### 2. 三引擎配置
 
 核心配置在 `application.yaml`：
 
@@ -193,6 +219,7 @@ app:
         api-key: ${SILICONFLOW_API_KEY:}
       ofox:
         base-url: https://api.ofox.ai/v1
+        anthropic-base-url: https://api.ofox.ai/anthropic
         api-key: ${OFOX_API_KEY:}
 
     vision:
@@ -200,6 +227,13 @@ app:
       model: Qwen/Qwen2.5-VL-72B-Instruct
       timeout: 120s
       # system-prompt / user-prompt ...
+
+    solve:
+      provider: ofox
+      model: anthropic/claude-haiku-5.5
+      include-image: true
+      knowledge-scope: 国内初二数学知识
+      # system-prompt ...
 
     chat:
       provider: siliconflow
@@ -210,13 +244,14 @@ app:
 ```
 
 - `providers` 只保存供应商的连接信息（endpoint、API Key）；
-- `vision.provider` 和 `chat.provider` 分别选择供应商；
-- 两个引擎的模型、温度、token 上限、超时、重试次数都独立配置；
-- 代码启动时会创建两个独立的 `OpenAiChatModel` 和两个独立的 `ChatClient`。
+- `vision.provider`、`solve.provider` 和 `chat.provider` 分别选择供应商；
+- 三个引擎的模型、温度、token 上限、超时、重试次数都独立配置；
+- 只要某个引擎的 `provider=ofox` 且 `model` 以 `anthropic` 开头，该引擎就会自动使用 Anthropic Messages 协议，并读取 `ofox.anthropic-base-url`；
+- `solve.knowledge-scope` 控制讲解时允许使用的知识范围，当前默认是国内初二数学知识。
 
 ### 3. 混合供应商示例
 
-两个引擎都使用硅基流动：
+视觉和对话引擎都使用硅基流动（解题引擎保持默认 Ofox 配置）：
 
 ```powershell
 $env:SILICONFLOW_API_KEY="sk-xxx"
@@ -264,7 +299,7 @@ $env:CHAT_MODEL="openai/gpt-6.1-sol"
 | `SILICONFLOW_API_KEY` | 空 | 硅基流动 API Key |
 | `SILICONFLOW_BASE_URL` | `https://api.siliconflow.cn/v1` | 硅基流动 endpoint |
 | `OFOX_API_KEY` | 空 | Ofox API Key |
-| `OFOX_BASE_URL` | `https://api.ofox.ai/v1` | Ofox endpoint |
+| `OFOX_BASE_URL` | `https://api.ofox.ai/v1` | Ofox OpenAI 兼容 endpoint |
 
 视觉引擎：
 
@@ -276,6 +311,17 @@ $env:CHAT_MODEL="openai/gpt-6.1-sol"
 | `VISION_MAX_TOKENS` | `1024` | 最大输出 token |
 | `VISION_TIMEOUT` | `120s` | 请求超时 |
 | `VISION_MAX_RETRIES` | `2` | SDK 重试次数 |
+
+解题引擎：
+
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `SOLVE_PROVIDER` | `ofox` | 供应商标识 |
+| `SOLVE_MODEL` | `anthropic/claude-haiku-5.5` | 建议支持图片输入 |
+| `SOLVE_TEMPERATURE` | `0.2` | 采样温度 |
+| `SOLVE_MAX_TOKENS` | `8192` | 单段最大输出 token |
+| `SOLVE_INCLUDE_IMAGE` | `true` | 讲解时是否携带原图 |
+| `SOLVE_KNOWLEDGE_SCOPE` | `国内初二数学知识` | 允许使用的知识范围 |
 
 对话引擎：
 
@@ -400,18 +446,18 @@ Windows PowerShell 中建议使用 `curl.exe`，避免 `curl` 被解析成
 本次已实际验证：
 
 - `mvnw -B -DskipTests compile`：BUILD SUCCESS
-- `mvnw test`：2 个测试通过，Spring 上下文正常启动，两个 ChatClient 为独立实例
+- `mvnw test`：全部测试通过，Spring 上下文正常启动，三个 ChatClient 为独立实例
 - `GET /api/ping`：200，时间格式正确
 - `POST /api/chat` + 本地模拟 OpenAI 兼容服务：200，使用对话模型
 - `POST /api/solve` + 本地模拟 OpenAI 兼容服务：200，使用视觉模型并携带图片
-- 两个引擎同时调用：mock 日志中分别出现 `chat-test` 和 `vision-test` 两个模型
+- 三个引擎同时调用：mock 日志中分别出现 `chat-test` 和 `vision-test` 两个模型
 - 缺少 `message`：400；缺少 `file`：400；上游不可用：502
 
 ---
 
 ## 五、关键实现说明
 
-### 1. 为什么手动创建两个 ChatModel
+### 1. 为什么手动创建三个 ChatModel
 
 Spring AI 的 OpenAI starter 默认只根据 `spring.ai.openai.*` 自动创建一个
 `OpenAiChatModel`，无法同时表达“视觉模型 A + 对话模型 B”这种组合。
@@ -424,7 +470,7 @@ Spring AI 的 OpenAI starter 默认只根据 `spring.ai.openai.*` 自动创建�
    `OpenAiChatModel`；
 4. 再分别构建 `visionChatClient` 和 `chatChatClient` 两个 `ChatClient`。
 
-这样两个引擎的 endpoint、API Key、模型、超时完全解耦。
+这样三个引擎的 endpoint、API Key、模型、超时完全解耦。
 
 ### 2. 为什么不再用 Spring Profile 切换供应商
 
@@ -527,7 +573,7 @@ spring.datasource.hikari.connection-init-sql: SET search_path TO geometry
 
 12. **测试**
     - Controller 层：MockMvc 测试 200、400、413、415、502；
-    - Service 层：Mock `ChatClient`，验证两个引擎不会串用；
+    - Service 层：Mock `ChatClient`，验证三个引擎不会串用；
     - 集成测试：Testcontainers 启动 PostgreSQL 18，验证 `search_path`；
     - AI 调用测试建议使用 WireMock 模拟 OpenAI 兼容接口。
 
@@ -539,7 +585,7 @@ spring.datasource.hikari.connection-init-sql: SET search_path TO geometry
    Spring AI 会以 no-auth 模式创建客户端，但实际调用会失败。
    这是刻意设计，方便本地只验证 `/api/ping` 和编译。
 
-2. **两个引擎可以同时使用不同供应商**  
+2. **三个引擎可以同时使用不同供应商**
    `vision.provider` 和 `chat.provider` 分别生效，互不覆盖。
    例如视觉用 Ofox、对话用硅基流动是合法配置。
 

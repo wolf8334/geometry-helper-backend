@@ -16,6 +16,7 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.multipart.MaxUploadSizeExceededException;
 import org.springframework.web.multipart.MultipartException;
 import org.springframework.web.multipart.support.MissingServletRequestPartException;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 /**
  * 全局异常处理器。
@@ -115,9 +116,22 @@ public class GlobalExceptionHandler {
      */
     @ExceptionHandler(AiServiceException.class)
     public ResponseEntity<ErrorResponse> handleAiService(AiServiceException exception) {
-        log.error("ai call failed msg={}", exception.getMessage(), exception);
+        log.error("大模型调用失败，内容为={}", exception.getMessage(), exception);
         return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
                 .body(error(exception.getMessage()));
+    }
+
+    /**
+     * 请求路径不存在或静态资源不存在。
+     *
+     * <p>如果不单独处理，会被兜底异常处理器捕获并错误地返回 500。</p>
+     *
+     * @return 404 Not Found
+     */
+    @ExceptionHandler(NoResourceFoundException.class)
+    public ResponseEntity<Void> handleNotFound(NoResourceFoundException exception) {
+        log.debug("resource not found path={}", exception.getResourcePath());
+        return ResponseEntity.notFound().build();
     }
 
     /**

@@ -12,8 +12,8 @@ import org.springframework.web.bind.annotation.RestController;
 /**
  * 普通文本对话接口。
  *
- * <p>与图片理解接口 {@code POST /api/solve} 使用不同的 AI 引擎，
- * 两个引擎可以同时配置、同时调用。</p>
+ * <p>与图片识别接口 {@code POST /api/solve} 使用的视觉引擎、正式解题引擎
+ * 相互独立，三个引擎可以同时配置、同时调用。</p>
  */
 @RestController
 @RequestMapping("/api")

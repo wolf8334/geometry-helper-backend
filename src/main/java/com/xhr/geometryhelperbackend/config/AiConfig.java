@@ -2,9 +2,12 @@ package com.xhr.geometryhelperbackend.config;
 
 import java.util.Locale;
 
+import com.anthropic.models.messages.OutputConfig;
 import io.micrometer.observation.ObservationRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.ai.anthropic.AnthropicChatModel;
+import org.springframework.ai.anthropic.AnthropicChatOptions;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.openai.OpenAiChatModel;
@@ -17,15 +20,16 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.util.StringUtils;
 
 /**
- * Spring AI 双引擎配置。
+ * Spring AI 多引擎配置。
  *
- * <p>项目里同时存在两个互相独立的 OpenAI 兼容客户端：</p>
+ * <p>项目里同时存在三个互相独立的模型客户端：</p>
  * <ul>
  *     <li>{@code visionChatClient}：视觉理解，使用 {@code app.ai.vision} 配置；</li>
+ *     <li>{@code solveChatClient}：正式解题，使用 {@code app.ai.solve} 配置；</li>
  *     <li>{@code chatChatClient}：普通文本对话，使用 {@code app.ai.chat} 配置。</li>
  * </ul>
  *
- * <p>两个客户端分别持有自己的 endpoint、API Key、模型和超时参数，
+ * <p>三个客户端分别持有自己的 endpoint、API Key、模型和超时参数，
  * 因此可以同时使用不同供应商或不同模型。它们不会因为 Spring Profile
  * 只有一个激活值而互相影响。</p>
  *
@@ -44,11 +48,20 @@ public class AiConfig {
     public static final String VISION_CHAT_CLIENT = "visionChatClient";
 
     /**
+     * 解题引擎 ChatClient 的 Bean 名称。
+     */
+    public static final String SOLVE_CHAT_CLIENT = "solveChatClient";
+
+    /**
      * 对话引擎 ChatClient 的 Bean 名称。
      */
     public static final String CHAT_CHAT_CLIENT = "chatChatClient";
 
     private static final Logger log = LoggerFactory.getLogger(AiConfig.class);
+
+    private static final String ANTHROPIC_PROVIDER = "ofox";
+
+    private static final String ANTHROPIC_MODEL_PREFIX = "anthropic";
 
     /**
      * 视觉理解模型。
@@ -63,6 +76,22 @@ public class AiConfig {
         AiProperties.Vision vision = aiProperties.getVision();
         AiProperties.Provider provider = resolveProvider(aiProperties, vision.getProvider(), "vision");
         return buildChatModel("vision", vision, provider,
+                observationRegistryProvider.getIfAvailable(() -> ObservationRegistry.NOOP));
+    }
+
+    /**
+     * 正式解题模型。
+     *
+     * @param aiProperties               业务配置
+     * @param observationRegistryProvider 可选的观测注册表
+     * @return 解题引擎的 ChatModel
+     */
+    @Bean("solveChatModel")
+    public ChatModel solveChatModel(AiProperties aiProperties,
+            ObjectProvider<ObservationRegistry> observationRegistryProvider) {
+        AiProperties.Solve solve = aiProperties.getSolve();
+        AiProperties.Provider provider = resolveProvider(aiProperties, solve.getProvider(), "solve");
+        return buildChatModel("solve", solve, provider,
                 observationRegistryProvider.getIfAvailable(() -> ObservationRegistry.NOOP));
     }
 
@@ -98,6 +127,21 @@ public class AiConfig {
     }
 
     /**
+     * 正式解题 ChatClient。
+     *
+     * @param solveChatModel 解题模型
+     * @param aiProperties   业务配置
+     * @return 带默认系统提示词的解题 ChatClient
+     */
+    @Bean(SOLVE_CHAT_CLIENT)
+    public ChatClient solveChatClient(@Qualifier("solveChatModel") ChatModel solveChatModel,
+            AiProperties aiProperties) {
+        return ChatClient.builder(solveChatModel)
+                .defaultSystem(aiProperties.getSolve().getSystemPrompt())
+                .build();
+    }
+
+    /**
      * 普通对话 ChatClient。
      *
      * @param chatChatModel 对话模型
@@ -113,7 +157,8 @@ public class AiConfig {
     }
 
     /**
-     * 根据引擎配置创建独立的 OpenAI 兼容 ChatModel。
+     * 根据引擎配置创建独立的 ChatModel。Ofox + anthropic 前缀模型走 Anthropic
+     * 协议，其余情况走 OpenAI 兼容协议。
      *
      * @param engineName 引擎名称，仅用于日志和错误提示
      * @param engine     引擎参数
@@ -124,15 +169,49 @@ public class AiConfig {
     private ChatModel buildChatModel(String engineName, AiProperties.Engine engine,
             AiProperties.Provider provider, ObservationRegistry observationRegistry) {
 
-        if (!StringUtils.hasText(provider.getBaseUrl())) {
-            throw new IllegalStateException("AI 引擎[" + engineName + "]的供应商 base-url 不能为空");
-        }
         if (!StringUtils.hasText(engine.getModel())) {
             throw new IllegalStateException("AI 引擎[" + engineName + "]的 model 不能为空");
         }
 
+        // 先决定协议，再校验对应 endpoint：Anthropic 引擎可以只配置
+        // anthropic-base-url，OpenAI 兼容引擎则使用 base-url。
+        boolean anthropicProtocol = usesAnthropicProtocol(engine);
+        String baseUrl = anthropicProtocol ? resolveAnthropicBaseUrl(provider) : provider.getBaseUrl();
+        if (!StringUtils.hasText(baseUrl)) {
+            throw new IllegalStateException("AI 引擎[" + engineName + "]的 "
+                    + (anthropicProtocol ? "anthropic-base-url" : "base-url") + " 不能为空");
+        }
+
+        // 只打印协议、模型和超时，不打印 API Key。
+        log.info("大模型初始化 engine={} provider={} protocol={} model={} timeout={}",
+                engineName, engine.getProvider(),
+                anthropicProtocol ? "anthropic" : "openai-compatible",
+                engine.getModel(), engine.getTimeout());
+
+        if (anthropicProtocol) {
+            AnthropicChatOptions.Builder optionsBuilder = AnthropicChatOptions.builder()
+                    .baseUrl(baseUrl)
+                    .apiKey(provider.getApiKey())
+                    .model(engine.getModel())
+                    .temperature(engine.getTemperature())
+                    .maxTokens(engine.getMaxTokens())
+                    .timeout(engine.getTimeout())
+                    .maxRetries(engine.getMaxRetries());
+
+            // 正式解题使用高强度思考：对应 Anthropic 请求中的
+            // output_config.effort=high。
+            if ("solve".equals(engineName)) {
+                optionsBuilder.effort(OutputConfig.Effort.HIGH);
+            }
+
+            return AnthropicChatModel.builder()
+                    .options(optionsBuilder.build())
+                    .observationRegistry(observationRegistry)
+                    .build();
+        }
+
         OpenAiChatOptions options = OpenAiChatOptions.builder()
-                .baseUrl(provider.getBaseUrl())
+                .baseUrl(baseUrl)
                 .apiKey(provider.getApiKey())
                 .model(engine.getModel())
                 .temperature(engine.getTemperature())
@@ -141,15 +220,29 @@ public class AiConfig {
                 .maxRetries(engine.getMaxRetries())
                 .build();
 
-        // 只打印 endpoint 和模型，不打印 API Key。
-        log.info("ai init engine={} provider={} baseUrl={} model={} timeout={} maxRetries={}",
-                engineName, engine.getProvider(), provider.getBaseUrl(), engine.getModel(),
-                engine.getTimeout(), engine.getMaxRetries());
-
         return OpenAiChatModel.builder()
                 .options(options)
                 .observationRegistry(observationRegistry)
                 .build();
+    }
+
+    /**
+     * 仅当 provider 是 Ofox 且模型 ID 以 anthropic 开头时切换为 Anthropic 协议。
+     */
+    private boolean usesAnthropicProtocol(AiProperties.Engine engine) {
+        if (!StringUtils.hasText(engine.getModel()) || !StringUtils.hasText(engine.getProvider())) {
+            return false;
+        }
+        String provider = engine.getProvider().trim();
+        return ANTHROPIC_PROVIDER.equalsIgnoreCase(provider)
+                && engine.getModel().regionMatches(true, 0, ANTHROPIC_MODEL_PREFIX, 0,
+                        ANTHROPIC_MODEL_PREFIX.length());
+    }
+
+    private String resolveAnthropicBaseUrl(AiProperties.Provider provider) {
+        return StringUtils.hasText(provider.getAnthropicBaseUrl())
+                ? provider.getAnthropicBaseUrl().trim()
+                : provider.getBaseUrl();
     }
 
     /**

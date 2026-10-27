@@ -1,12 +1,13 @@
 # =============================================================================
 # 应用公共配置
 # -----------------------------------------------------------------------------
-# 本项目同时运行两个 AI 引擎：
-#   1. app.ai.vision：视觉理解引擎，供 POST /api/solve 使用；
-#   2. app.ai.chat  ：普通文本对话引擎，供 POST /api/chat 使用。
+# 本项目同时运行三个 AI 引擎：
+#   1. app.ai.vision：视觉理解引擎，负责图片识别和题目分析；
+#   2. app.ai.solve ：正式解题引擎，接收确认后的题目复述、已生成的前文和原图；
+#   3. app.ai.chat  ：普通文本对话引擎，供 POST /api/chat 使用。
 #
 # 每个引擎独立选择 provider 和 model，因此可以同时使用不同供应商：
-#   例如视觉用 Ofox、对话用硅基流动，或者反过来。
+#   例如视觉用 DeepSeek 分析，正式解题用 Ofox 的 Anthropic 模型，对话用其他文本模型。
 #
 # 敏感信息（API Key、数据库密码）请通过环境变量注入，不要提交到代码仓库。
 # =============================================================================
@@ -16,7 +17,7 @@ spring:
 
   ai:
     # 关闭 Spring AI 的单模型自动配置。
-    # 本项目在 AiConfig 中手动创建两个 ChatModel / ChatClient，避免多个
+    # 本项目在 AiConfig 中手动创建三个 ChatModel / ChatClient，避免多个
     # ChatModel Bean 导致自动配置歧义。
     model:
       chat: none
@@ -27,7 +28,7 @@ spring:
         speech: none
       moderation: none
 
-    # 关闭自动 ChatClient.Builder，两个 ChatClient 也由 AiConfig 手动创建。
+    # 关闭自动 ChatClient.Builder，三个 ChatClient 也由 AiConfig 手动创建。
     chat:
       client:
         enabled: false
@@ -78,7 +79,7 @@ app:
   ai:
     # -------------------------------------------------------------------------
     # 供应商连接池：只配置 endpoint 和 API Key。
-    # 新增供应商时在这里加一项，然后在 vision/chat 的 provider 中引用即可。
+    # 新增供应商时在这里加一项，然后在 vision/solve/chat 的 provider 中引用即可。
     # -------------------------------------------------------------------------
     providers:
       siliconflow:
@@ -86,6 +87,8 @@ app:
         api-key: ${SILICONFLOW_API_KEY:}
       ofox:
         base-url: https://api.ofox.ai/v1
+        # 模型 ID 以 anthropic 开头时，AiConfig 会自动改用 Anthropic Messages 协议。
+        anthropic-base-url: https://api.ofox.ai/anthropic
         api-key: ${OFOX_API_KEY:}
       ds:
         base-url: https://api.deepseek.com/v1
@@ -94,13 +97,15 @@ app:
     # -------------------------------------------------------------------------
     # 视觉理解引擎（VL / Vision）
     # 必须选择支持图片输入的模型。
+    # 当 provider=ofox 且 model 以 anthropic 开头时，同样会自动切换到
+    # Anthropic Messages 协议，并改用上面的 ofox.anthropic-base-url。
     # -------------------------------------------------------------------------
     vision:
-      provider: ${VISION_PROVIDER:siliconflow}
-      model: ${VISION_MODEL:Qwen/Qwen3-VL-32B-Instruct}
+      provider: ${VISION_PROVIDER:ds}
+      model: ${VISION_MODEL:deepseek-flash}
       temperature: ${VISION_TEMPERATURE:0.7}
-      max-tokens: ${VISION_MAX_TOKENS:4096}
-      timeout: 120s
+      max-tokens: ${VISION_MAX_TOKENS:65536}
+      timeout: 600s
       max-retries: 2
       system-prompt: |
         你是一名专业、严谨的图片内容描述助手。
@@ -109,21 +114,51 @@ app:
       user-prompt: |
         请仔细观察这张图片，并用简体中文详细描述图片内容，包括：
         1. 图片的主体对象和场景;
-        2. 图中可见的文字、公式或标注（如有）;
+        2. 图中可见的文字、公式或标注（如有；公式使用 LaTeX，行内用 $...$，独立用 $$...$$）;
         3. 与几何图形相关的形状、线段、角度、坐标等信息（如有）;
         4. 不要输出与题目无关的内容，如图上二维码的内容等等。
         5. 只输出描述内容，不要输出多余的前后缀。
 
     # -------------------------------------------------------------------------
+    # 正式解题引擎
+    # 默认同时接收用户确认后的题目复述、已生成的前文和原图；如果解题模型只
+    # 支持文本，可设置 include-image: false。
+    # 当 provider=ofox 且 model 以 anthropic 开头时，AiConfig 会自动切换到
+    # Anthropic Messages 协议，并改用上面的 ofox.anthropic-base-url。
+    # -------------------------------------------------------------------------
+    solve:
+      provider: ${SOLVE_PROVIDER:ofox}
+      model: ${SOLVE_MODEL:anthropic/claude-haiku-5.5}
+      temperature: ${SOLVE_TEMPERATURE:0.2}
+      max-tokens: ${SOLVE_MAX_TOKENS:65536}
+      timeout: 3600s
+      max-retries: 2
+      include-image: ${SOLVE_INCLUDE_IMAGE:true}
+      # 解题引擎允许使用的知识范围。当前先限制为国内初二数学知识；
+      # 后续细化时直接改这里，或通过环境变量覆盖。
+      knowledge-scope: ${SOLVE_KNOWLEDGE_SCOPE:国内初二数学知识}
+      system-prompt: |
+        你是一名严谨、耐心的解题助手。
+        请使用简体中文，按照用户确认后的题目理解逐步推导；
+        每一步写清楚依据、公式和计算，不跳步，
+        不使用“易知”“易得”“显然”等省略性表述；
+        最后单独给出结论或答案。
+        所有公式必须使用 LaTeX：行内公式用 $...$，独立公式用 $$...$$，
+        使用 KaTeX 支持的标准命令（如 \frac、\sqrt、\angle、\triangle、\boxed），
+        不要用 Unicode 上下标或纯文本替代公式。
+
+    # -------------------------------------------------------------------------
     # 普通对话引擎（纯文本）
     # 可以使用成本更低的纯文本模型，与视觉引擎完全独立。
+    # 当 provider=ofox 且 model 以 anthropic 开头时，同样会自动切换到
+    # Anthropic Messages 协议，并改用上面的 ofox.anthropic-base-url。
     # -------------------------------------------------------------------------
     chat:
-      provider: ${CHAT_PROVIDER:siliconflow}
-      model: ${CHAT_MODEL}
+      provider: ${CHAT_PROVIDER:ds}
+      model: ${CHAT_MODEL:deepseek-flash}
       temperature: ${CHAT_TEMPERATURE:0.1}
-      max-tokens: ${CHAT_MAX_TOKENS:4096}
-      timeout: 60s
+      max-tokens: ${CHAT_MAX_TOKENS:65536}
+      timeout: 120s
       max-retries: 2
       # 最多携带最近多少条历史消息，防止多轮对话 token 无限增长。
       max-history-messages: 20

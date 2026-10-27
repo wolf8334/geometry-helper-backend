@@ -9,15 +9,16 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 /**
  * AI 业务配置。
  *
- * <p>当前项目同时使用两个独立的引擎：</p>
+ * <p>当前项目同时使用三个独立的引擎：</p>
  * <ul>
- *     <li>{@code app.ai.vision}：视觉理解引擎，负责 {@code POST /api/solve} 的图片理解；</li>
+ *     <li>{@code app.ai.vision}：视觉理解引擎，负责图片识别和题目分析；</li>
+ *     <li>{@code app.ai.solve}：解题引擎，负责根据确认后的文本分析逐步解题；</li>
  *     <li>{@code app.ai.chat}：普通对话引擎，负责 {@code POST /api/chat} 的文本对话。</li>
  * </ul>
  *
- * <p>两个引擎各自选择供应商（{@code provider}）和模型（{@code model}），
- * 因此可以同时使用，例如：视觉引擎用硅基流动的 VL 模型，对话引擎用 Ofox
- * 的文本模型。供应商的 endpoint 和 API Key 统一放在
+ * <p>三个引擎各自选择供应商（{@code provider}）和模型（{@code model}），
+ * 因此可以组合使用，例如：视觉识别用 DeepSeek，正式解题用 GPT，
+ * 普通对话用成本更低的文本模型。供应商的 endpoint 和 API Key 统一放在
  * {@code app.ai.providers} 下，避免重复配置。</p>
  *
  * <p>配置示例：</p>
@@ -34,14 +35,17 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  *     vision:
  *       provider: siliconflow
  *       model: Qwen/Qwen2.5-VL-72B-Instruct
+ *     solve:
+ *       provider: ofox
+ *       model: your-gpt-model-id
  *     chat:
  *       provider: siliconflow
  *       model: Qwen/Qwen2.5-72B-Instruct
  * </pre>
  *
  * <p>这里不使用 Spring Profile 切换供应商，因为 Profile 是全局开关，
- * 无法表达“视觉用 A 供应商、对话用 B 供应商”这种组合。通过
- * {@code provider} 字段按引擎选择供应商，才能真正做到两个引擎同时工作。</p>
+ * 无法表达“视觉用 A 供应商、解题用 B 供应商、对话用 C 供应商”这种组合。
+ * 通过 {@code provider} 字段按引擎选择供应商，才能真正做到多个引擎同时工作。</p>
  */
 @ConfigurationProperties(prefix = "app.ai")
 public class AiProperties {
@@ -60,6 +64,11 @@ public class AiProperties {
     private final Vision vision = new Vision();
 
     /**
+     * 正式解题引擎配置。
+     */
+    private final Solve solve = new Solve();
+
+    /**
      * 普通对话引擎配置。
      */
     private final Chat chat = new Chat();
@@ -70,6 +79,10 @@ public class AiProperties {
 
     public Vision getVision() {
         return this.vision;
+    }
+
+    public Solve getSolve() {
+        return this.solve;
     }
 
     public Chat getChat() {
@@ -91,6 +104,12 @@ public class AiProperties {
          */
         private String apiKey = "";
 
+        /**
+         * Anthropic 协议 endpoint。仅当引擎的 {@code provider=ofox} 且模型以
+         * {@code anthropic} 开头时使用；不配置则复用 {@link #baseUrl}。
+         */
+        private String anthropicBaseUrl;
+
         public String getBaseUrl() {
             return this.baseUrl;
         }
@@ -106,10 +125,18 @@ public class AiProperties {
         public void setApiKey(String apiKey) {
             this.apiKey = apiKey;
         }
+
+        public String getAnthropicBaseUrl() {
+            return this.anthropicBaseUrl;
+        }
+
+        public void setAnthropicBaseUrl(String anthropicBaseUrl) {
+            this.anthropicBaseUrl = anthropicBaseUrl;
+        }
     }
 
     /**
-     * 两个引擎共用的模型参数。
+     * 各引擎共用的模型参数。
      */
     public static class Engine {
 
@@ -229,7 +256,7 @@ public class AiProperties {
             setUserPrompt("""
                     请仔细观察这张图片，并用简体中文详细描述图片内容，包括：
                     1. 图片的主体对象和场景；
-                    2. 图中可见的文字、公式或标注（如有）；
+                    2. 图中可见的文字、公式或标注（如有；公式使用 LaTeX，行内用 $...$，独立用 $$...$$）；
                     3. 与几何图形相关的形状、线段、角度、坐标等信息（如有）。
                     只输出描述内容，不要输出多余的前后缀。
                     """);
@@ -241,6 +268,58 @@ public class AiProperties {
 
         public void setUserPrompt(String userPrompt) {
             this.userPrompt = userPrompt;
+        }
+    }
+
+    /**
+     * 正式解题引擎配置。
+     *
+     * <p>默认同时接收确认后的题目分析文本和原图，方便模型重新核对图形；
+     * 如果解题模型只支持文本，可以设置 {@code include-image=false}。</p>
+     */
+    public static class Solve extends Engine {
+
+        /**
+         * 正式解题时是否把原图一并发送给解题模型。
+         */
+        private boolean includeImage = true;
+
+        /**
+         * 解题时允许使用的知识范围。默认先限制为国内初二数学知识，
+         * 后续可以按需要改成更细的条目，或通过环境变量覆盖。
+         */
+        private String knowledgeScope = "国内初二数学知识";
+
+        public Solve() {
+            // 解题需要较长的输出和更稳定的推理，默认参数与视觉/对话引擎不同。
+            setTemperature(0.2);
+            setMaxTokens(8192);
+            setTimeout(Duration.ofSeconds(180));
+            setSystemPrompt("""
+                    你是一名严谨、耐心的数学解题助手。
+                    请使用简体中文，按照用户确认后的题目理解逐步推导；
+                    每一步写清楚依据、公式和计算，不跳步，
+                    不使用“易知”“易得”“显然”等省略性表述；
+                    最后单独给出结论或答案。
+                    所有数学公式必须使用 LaTeX：行内公式用 $...$，独立公式用 $$...$$，
+                    使用 KaTeX 支持的标准命令（如 \\frac、\\sqrt、\\angle、\\triangle、\\boxed）。
+                    """);
+        }
+
+        public boolean isIncludeImage() {
+            return this.includeImage;
+        }
+
+        public void setIncludeImage(boolean includeImage) {
+            this.includeImage = includeImage;
+        }
+
+        public String getKnowledgeScope() {
+            return this.knowledgeScope;
+        }
+
+        public void setKnowledgeScope(String knowledgeScope) {
+            this.knowledgeScope = knowledgeScope;
         }
     }
 
