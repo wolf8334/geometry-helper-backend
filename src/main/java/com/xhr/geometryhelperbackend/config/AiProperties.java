@@ -285,10 +285,10 @@ public class AiProperties {
         private boolean includeImage = true;
 
         /**
-         * 解题时允许使用的知识范围。默认先限制为国内初二数学知识，
+         * 解题时允许使用的知识范围。默认先限制为中国国内初二及以前各学科知识（不限于数学），
          * 后续可以按需要改成更细的条目，或通过环境变量覆盖。
          */
-        private String knowledgeScope = "国内初二数学知识";
+        private String knowledgeScope = "中国国内初二及以前各学科知识（不限于数学）";
 
         public Solve() {
             // 解题需要较长的输出和更稳定的推理，默认参数与视觉/对话引擎不同。
@@ -296,7 +296,7 @@ public class AiProperties {
             setMaxTokens(8192);
             setTimeout(Duration.ofSeconds(180));
             setSystemPrompt("""
-                    你是一名严谨、耐心的数学解题助手。
+                    你是一名严谨、耐心的老师，知识水平相当于中国国内初二教师：初二及以前各学科知识都可以使用，不限于数学。
                     请使用简体中文，按照用户确认后的题目理解逐步推导；
                     每一步写清楚依据、公式和计算，不跳步，
                     不使用“易知”“易得”“显然”等省略性表述；

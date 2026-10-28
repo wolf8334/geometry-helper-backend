@@ -12,6 +12,8 @@
   const ALLOWED_EXTENSIONS = /\.(jpe?g|png|webp|gif)$/i;
   const API_PING = new URL('api/ping', document.baseURI).toString();
   const API_SOLVE = new URL('api/solve', document.baseURI).toString();
+  const API_HISTORY = new URL('api/history', document.baseURI).toString();
+  const API_FOLLOWUP = new URL('api/followup', document.baseURI).toString();
   const SANITIZE_CONFIG = {
     USE_PROFILES: { html: true },
     FORBID_TAGS: [
@@ -112,6 +114,20 @@
     continueSolveText: $('continueSolveText'),
     retryButton: $('retryButton'),
 
+    followupButton: $('followupButton'),
+    followupCount: $('followupCount'),
+    followupDialog: $('followupDialog'),
+    closeFollowupButton: $('closeFollowupButton'),
+    followupMeta: $('followupMeta'),
+    followupStatus: $('followupStatus'),
+    followupMessages: $('followupMessages'),
+    followupEmpty: $('followupEmpty'),
+    followupForm: $('followupForm'),
+    followupInput: $('followupInput'),
+    followupStepHint: $('followupStepHint'),
+    followupSubmit: $('followupSubmit'),
+    followupError: $('followupError'),
+
     previewDialog: $('previewDialog'),
     closePreviewButton: $('closePreviewButton'),
     dialogImage: $('dialogImage'),
@@ -132,6 +148,16 @@
     solvePart: 0,
     solveTotal: 3,
     solveDone: false,
+    questionId: null,
+    maxViewedPart: 0,
+    followupMessages: [],
+    followupLimit: 3,
+    followupLoaded: false,
+    followupLoading: false,
+    followupSending: false,
+    followupLoadToken: 0,
+    followupSendToken: 0,
+    followupTrigger: null,
     retryCount: 0,
     loadToken: 0,
     installPrompt: null,
@@ -202,6 +228,22 @@
     });
     dom.previewDialog.addEventListener('close', restorePreviewFocus);
 
+    dom.followupButton.addEventListener('click', openFollowup);
+    dom.closeFollowupButton.addEventListener('click', closeFollowup);
+    dom.followupDialog.addEventListener('click', (event) => {
+      if (event.target === dom.followupDialog) {
+        closeFollowup();
+      }
+    });
+    dom.followupDialog.addEventListener('close', restoreFollowupFocus);
+    dom.followupForm.addEventListener('submit', sendFollowup);
+    dom.followupInput.addEventListener('keydown', (event) => {
+      if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
+        event.preventDefault();
+        dom.followupForm.requestSubmit();
+      }
+    });
+
     bindDropZone();
 
     window.addEventListener('online', () => {
@@ -217,6 +259,7 @@
 
     window.addEventListener('resize', () => {
       scheduleFitDisplayMath(dom.markdownResult);
+      scheduleFitDisplayMath(dom.followupMessages);
     });
 
     document.addEventListener('visibilitychange', () => {
@@ -349,6 +392,7 @@
     state.imageLoaded = false;
     state.uploadOutcome = null;
     state.analysis = '';
+    state.questionId = null;
     state.retryCount = 0;
     resetSolveState();
     state.loadToken += 1;
@@ -449,6 +493,7 @@
     dom.retryAnalysisButton.disabled = busy || state.retryCount >= 1
       || !state.analysis || state.uploadOutcome === true;
     dom.userNote.disabled = busy || Boolean(state.analysis);
+    updateFollowupButton();
 
     if (!online) {
       dom.uploadButton.title = '当前网络不可用';
@@ -642,6 +687,9 @@
       if (note) {
         formData.append('message', note);
       }
+      if (state.questionId && stage !== 'analyze') {
+        formData.append('questionId', String(state.questionId));
+      }
       if (isSolve) {
         formData.append('analysis', state.analysis);
         formData.append('part', String(requestedPart));
@@ -663,6 +711,10 @@
       if (!response.ok) {
         handlePhaseFailure(pickErrorMessage(response.status, data), stage);
         return false;
+      }
+
+      if (data && Number.isInteger(data.questionId)) {
+        state.questionId = data.questionId;
       }
 
       if (isSolve) {
@@ -832,10 +884,25 @@
   }
 
   function resetSolveState() {
+    if (dom.followupDialog && dom.followupDialog.open) {
+      closeFollowup();
+    }
     state.solveParts = [];
     state.solvePart = 0;
     state.solveTotal = 3;
     state.solveDone = false;
+    state.maxViewedPart = 0;
+    state.followupMessages = [];
+    state.followupLimit = 3;
+    state.followupLoaded = false;
+    state.followupLoading = false;
+    state.followupSending = false;
+    state.followupLoadToken += 1;
+    state.followupSendToken += 1;
+    updateFollowupFormState();
+    setFollowupStatus('');
+    clearFollowupError();
+    updateFollowupButton();
   }
 
   function buildSolveHistory() {
@@ -851,6 +918,7 @@
     state.solveParts[index] = answer;
     state.solveParts.length = Math.max(state.solveParts.length, part);
     state.solvePart = Math.max(state.solvePart, part);
+    state.maxViewedPart = Math.max(state.maxViewedPart, part);
   }
 
   function solvePartLabel(part) {
@@ -891,6 +959,9 @@
       details.open = openOnlyPart
         ? part === openOnlyPart
         : (!previousParts.has(part) || openParts.has(part));
+      if (details.open) {
+        state.maxViewedPart = Math.max(state.maxViewedPart, part);
+      }
 
       const summary = document.createElement('summary');
       summary.className = 'solve-part__summary';
@@ -911,6 +982,9 @@
       details.append(summary, body);
       details.addEventListener('toggle', () => {
         if (details.open) {
+          state.maxViewedPart = Math.max(state.maxViewedPart, part);
+          updateFollowupButton();
+          updateFollowupStepHint();
           scheduleFitDisplayMath(details);
         }
       });
@@ -921,6 +995,7 @@
 
     dom.markdownResult.replaceChildren(fragment);
     dom.markdownResult.hidden = false;
+    updateFollowupButton();
     scheduleFitDisplayMath(dom.markdownResult);
   }
 
@@ -956,6 +1031,7 @@
     state.solvePart = part;
     state.solveTotal = total;
     state.solveDone = done;
+    state.maxViewedPart = Math.max(state.maxViewedPart, part);
 
     dom.resultSection.hidden = false;
     dom.resultSection.removeAttribute('aria-busy');
@@ -1492,6 +1568,387 @@
     }
 
     state.previewTrigger = null;
+  }
+
+  function updateFollowupButton() {
+    if (!dom.followupButton) return;
+
+    const hasPart = state.solveParts.some((answer) => Boolean(answer));
+    dom.followupButton.hidden = !(state.questionId && hasPart);
+
+    const answerCount = state.followupMessages
+      .filter((message) => message.role === 'assistant').length;
+    dom.followupCount.hidden = answerCount === 0;
+    dom.followupCount.textContent = answerCount > 99 ? '99+' : String(answerCount);
+    updateFollowupStepHint();
+  }
+
+  function followupStep() {
+    const generated = state.solvePart || 0;
+    const viewed = Math.max(state.maxViewedPart || 0, generated);
+    if (viewed < 1) return 0;
+    const total = state.solveTotal || 0;
+    return total > 0 ? Math.min(viewed, total) : viewed;
+  }
+
+  function followupLimit() {
+    return Number.isInteger(state.followupLimit)
+      ? Math.max(0, state.followupLimit)
+      : 3;
+  }
+
+  function followupQuestionCount() {
+    return state.followupMessages
+      .filter((message) => message.role === 'user').length;
+  }
+
+  function followupLimitReached() {
+    const limit = followupLimit();
+    return limit === 0 || followupQuestionCount() >= limit;
+  }
+
+  function followupLimitMessage() {
+    const limit = followupLimit();
+    return limit === 0
+      ? '当前未开启追问功能。'
+      : `每道题最多追问 ${limit} 次，已达到上限。`;
+  }
+
+  function updateFollowupStepHint() {
+    if (!dom.followupStepHint) return;
+
+    const limit = followupLimit();
+    const remaining = Math.max(0, limit - followupQuestionCount());
+    if (limit === 0) {
+      dom.followupStepHint.textContent = '当前未开启追问';
+      return;
+    }
+    if (remaining === 0) {
+      dom.followupStepHint.textContent = `每道题最多追问 ${limit} 次，已用完`;
+      return;
+    }
+
+    const step = followupStep();
+    const stepText = step > 0
+      ? `记录为在展开第 ${step} 段之后的追问`
+      : '请先展开一段讲解';
+    dom.followupStepHint.textContent = `${stepText} · 剩余 ${remaining}/${limit} 次`;
+  }
+
+  function updateFollowupMeta(maxSolvedPart) {
+    if (!dom.followupMeta) return;
+
+    const step = followupStep();
+    const solved = Number.isInteger(maxSolvedPart) ? maxSolvedPart : (state.solvePart || 0);
+    const limit = followupLimit();
+    const limitText = limit === 0
+      ? '未开启追问'
+      : `追问 ${followupQuestionCount()}/${limit}`;
+    dom.followupMeta.textContent = `当前已展开到第 ${step || 0} 段 · 已生成 ${solved} 段 · ${limitText}`;
+  }
+
+  function updateFollowupFormState() {
+    if (!dom.followupInput || !dom.followupSubmit) return;
+
+    const limit = followupLimit();
+    const reached = followupLimitReached();
+    if (reached) {
+      dom.followupInput.disabled = true;
+      dom.followupSubmit.disabled = true;
+      dom.followupSubmit.textContent = limit === 0 ? '未开启追问' : '已达上限';
+    } else {
+      dom.followupInput.disabled = false;
+      dom.followupSubmit.disabled = state.followupSending || state.followupLoading;
+      dom.followupSubmit.textContent = state.followupSending ? '发送中…' : '发送追问';
+    }
+
+    updateFollowupStepHint();
+  }
+
+  async function openFollowup() {
+    if (!state.questionId || dom.followupDialog.open) return;
+
+    state.followupTrigger = document.activeElement;
+    document.body.classList.add('dialog-open');
+    if (typeof dom.followupDialog.showModal === 'function') {
+      dom.followupDialog.showModal();
+    } else {
+      dom.followupDialog.setAttribute('open', '');
+    }
+
+    clearFollowupError();
+    updateFollowupMeta();
+    updateFollowupFormState();
+    if (!state.followupLoaded && !state.followupLoading) {
+      await loadFollowupThread();
+    } else {
+      renderFollowupMessages();
+    }
+
+    if (dom.followupDialog.open && !state.followupSending && !dom.followupInput.disabled) {
+      dom.followupInput.focus();
+    }
+  }
+
+  function closeFollowup() {
+    state.followupLoadToken += 1;
+    state.followupLoading = false;
+
+    if (dom.followupDialog.open) {
+      dom.followupDialog.close();
+      return;
+    }
+
+    dom.followupDialog.removeAttribute('open');
+    restoreFollowupFocus();
+  }
+
+  function restoreFollowupFocus() {
+    document.body.classList.remove('dialog-open');
+
+    if (state.followupTrigger && typeof state.followupTrigger.focus === 'function') {
+      state.followupTrigger.focus();
+    }
+
+    state.followupTrigger = null;
+  }
+
+  async function loadFollowupThread() {
+    if (!state.questionId) return;
+
+    const token = state.followupLoadToken + 1;
+    state.followupLoadToken = token;
+    state.followupLoading = true;
+    setFollowupStatus('正在加载之前的追问…');
+    dom.followupEmpty.hidden = true;
+    dom.followupMessages.replaceChildren();
+    updateFollowupFormState();
+
+    try {
+      const response = await fetch(
+        `${API_HISTORY}/${encodeURIComponent(String(state.questionId))}`,
+        {
+          headers: { Accept: 'application/json' },
+          cache: 'no-store'
+        }
+      );
+      const data = await readJson(response);
+
+      if (token !== state.followupLoadToken) return;
+      if (!response.ok) {
+        showFollowupError(pickErrorMessage(response.status, data));
+        return;
+      }
+
+      const followups = data && Array.isArray(data.followups) ? data.followups : [];
+      state.followupMessages = followups;
+      state.followupLoaded = true;
+
+      if (data && Number.isInteger(data.maxFollowupQuestions)) {
+        state.followupLimit = Math.max(0, data.maxFollowupQuestions);
+      }
+      if (data && Number.isInteger(data.followupStep)) {
+        state.maxViewedPart = Math.max(state.maxViewedPart, data.followupStep);
+      }
+
+      updateFollowupMeta(data && data.maxSolvedPart);
+      updateFollowupFormState();
+      renderFollowupMessages();
+      updateFollowupButton();
+    } catch (error) {
+      if (token === state.followupLoadToken) {
+        showFollowupError('加载追问记录失败，请稍后重试。');
+      }
+    } finally {
+      if (token === state.followupLoadToken) {
+        state.followupLoading = false;
+        setFollowupStatus('');
+        updateFollowupFormState();
+      }
+    }
+  }
+
+  function renderFollowupMessages() {
+    const messages = state.followupMessages;
+    dom.followupMessages.replaceChildren();
+    dom.followupMessages.hidden = messages.length === 0;
+    dom.followupEmpty.hidden = messages.length > 0;
+
+    if (!messages.length) return;
+
+    const fragment = document.createDocumentFragment();
+    messages.forEach((message) => {
+      const isAssistant = message.role === 'assistant';
+      const wrapper = document.createElement('article');
+      wrapper.className = `followup-message followup-message--${isAssistant ? 'assistant' : 'user'}`;
+
+      const meta = document.createElement('div');
+      meta.className = 'followup-message__meta';
+      const label = isAssistant ? '老师' : '我';
+      const step = Number.isInteger(message.stepNo) ? ` · 第 ${message.stepNo} 段` : '';
+      const time = formatHistoryTime(message.createdAt);
+      meta.textContent = `${label}${step}${time ? ` · ${time}` : ''}`;
+
+      const bubble = document.createElement('div');
+      bubble.className = 'followup-message__bubble';
+      if (isAssistant) {
+        bubble.classList.add('markdown');
+        renderMarkdown(message.content || '', bubble);
+      } else {
+        bubble.textContent = message.content || '';
+      }
+
+      wrapper.append(meta, bubble);
+      fragment.appendChild(wrapper);
+    });
+
+    dom.followupMessages.appendChild(fragment);
+    scheduleFitDisplayMath(dom.followupMessages);
+    scrollFollowupToBottom();
+  }
+
+  async function sendFollowup(event) {
+    event.preventDefault();
+    if (state.followupSending) return;
+    if (state.followupLoading) {
+      showFollowupError('正在加载之前的追问，请稍候。');
+      return;
+    }
+    if (followupLimitReached()) {
+      showFollowupError(followupLimitMessage());
+      updateFollowupFormState();
+      return;
+    }
+
+    const message = dom.followupInput.value.trim();
+    if (!message) {
+      showFollowupError('请输入追问内容。');
+      dom.followupInput.focus();
+      return;
+    }
+    if (!state.questionId) {
+      showFollowupError('题目记录尚未创建，请重新识别后再追问。');
+      return;
+    }
+
+    const step = followupStep();
+    if (step < 1) {
+      showFollowupError('请先展开一段讲解后再追问。');
+      return;
+    }
+
+    const questionId = state.questionId;
+    const sendToken = state.followupSendToken + 1;
+    state.followupSendToken = sendToken;
+    state.followupSending = true;
+    updateFollowupFormState();
+    clearFollowupError();
+    setFollowupStatus('老师正在思考…');
+
+    try {
+      const response = await fetch(API_FOLLOWUP, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json'
+        },
+        body: JSON.stringify({
+          questionId,
+          message,
+          step
+        }),
+        cache: 'no-store'
+      });
+      const data = await readJson(response);
+
+      if (sendToken !== state.followupSendToken) return;
+      if (!response.ok) {
+        showFollowupError(pickErrorMessage(response.status, data));
+        return;
+      }
+
+      const answer = data && typeof data.answer === 'string' ? data.answer.trim() : '';
+      if (!answer) {
+        showFollowupError('系统未返回追问回复，请重试。');
+        return;
+      }
+
+      const now = new Date().toISOString();
+      const answeredStep = data && Number.isInteger(data.step) ? data.step : step;
+      state.followupMessages.push({
+        id: Date.now(),
+        role: 'user',
+        content: message,
+        stepNo: answeredStep,
+        modelName: '',
+        createdAt: now
+      });
+      state.followupMessages.push({
+        id: Date.now() + 1,
+        role: 'assistant',
+        content: answer,
+        stepNo: answeredStep,
+        modelName: data && data.modelName ? data.modelName : '',
+        createdAt: data && data.createdAt ? data.createdAt : now
+      });
+      state.followupLoaded = true;
+
+      if (data && Number.isInteger(data.followupStep)) {
+        state.maxViewedPart = Math.max(state.maxViewedPart, data.followupStep);
+      }
+
+      dom.followupInput.value = '';
+      renderFollowupMessages();
+      updateFollowupMeta();
+      updateFollowupButton();
+      updateFollowupFormState();
+    } catch (error) {
+      if (sendToken === state.followupSendToken) {
+        showFollowupError('追问发送失败，请检查网络后重试。');
+      }
+    } finally {
+      if (sendToken === state.followupSendToken) {
+        state.followupSending = false;
+        updateFollowupFormState();
+        setFollowupStatus('');
+      }
+    }
+  }
+
+  function setFollowupStatus(message) {
+    dom.followupStatus.textContent = message || '';
+    dom.followupStatus.hidden = !message;
+  }
+
+  function showFollowupError(message) {
+    dom.followupError.textContent = message;
+    dom.followupError.hidden = false;
+  }
+
+  function clearFollowupError() {
+    dom.followupError.textContent = '';
+    dom.followupError.hidden = true;
+  }
+
+  function scrollFollowupToBottom() {
+    window.requestAnimationFrame(() => {
+      dom.followupMessages.scrollTop = dom.followupMessages.scrollHeight;
+    });
+  }
+
+  function formatHistoryTime(value) {
+    if (!value) return '';
+
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return '';
+
+    return new Intl.DateTimeFormat('zh-CN', {
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false
+    }).format(date);
   }
 
   function setupInstallPrompt() {

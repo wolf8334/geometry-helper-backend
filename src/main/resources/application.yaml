@@ -43,7 +43,7 @@ spring:
   # Hikari 通过 schema 和 connection-init-sql 双保险保证每个连接都使用
   # geometry 作为 search_path。
   datasource:
-    url: jdbc:postgresql://127.0.0.1:5432/geometry
+    url: jdbc:postgresql://127.0.0.1:5432/postgres?currentSchema=geometry
     username: postgres
     password: ${PG_PWD:}
     driver-class-name: org.postgresql.Driver
@@ -51,9 +51,16 @@ spring:
       pool-name: GeometryHikariPool
       schema: geometry
       connection-init-sql: SET search_path TO geometry
-      maximum-pool-size: 10
-      minimum-idle: 2
-      connection-timeout: 30000
+      maximum-pool-size: ${DB_POOL_MAX_SIZE:10}
+      minimum-idle: ${DB_POOL_MIN_IDLE:2}
+      connection-timeout: ${DB_POOL_CONNECTION_TIMEOUT:30000}
+      validation-timeout: ${DB_POOL_VALIDATION_TIMEOUT:5000}
+      # 连接池会主动回收空闲连接，避免数据库或代理先断开后 Hikari 才发现。
+      # keepalive-time 必须小于 max-lifetime；默认每分钟保活、10 分钟强制回收。
+      # 如果数据库/代理的 idle timeout 更短，请把这两个值等比例调小。
+      keepalive-time: ${DB_POOL_KEEPALIVE_TIME:60000}
+      idle-timeout: ${DB_POOL_IDLE_TIMEOUT:300000}
+      max-lifetime: ${DB_POOL_MAX_LIFETIME:600000}
 
 server:
   port: 9876
@@ -134,11 +141,11 @@ app:
       timeout: 3600s
       max-retries: 2
       include-image: ${SOLVE_INCLUDE_IMAGE:true}
-      # 解题引擎允许使用的知识范围。当前先限制为国内初二数学知识；
+      # 解题引擎允许使用的知识范围。当前先限制为中国国内初二及以前各学科知识（不限于数学）；
       # 后续细化时直接改这里，或通过环境变量覆盖。
-      knowledge-scope: ${SOLVE_KNOWLEDGE_SCOPE:国内初二数学知识}
+      knowledge-scope: ${SOLVE_KNOWLEDGE_SCOPE:中国国内初二及以前各学科知识（不限于数学）}
       system-prompt: |
-        你是一名严谨、耐心的解题助手。
+        你是一名严谨、耐心的老师，知识水平相当于中国国内初二教师：初二及以前各学科知识都可以使用，不限于数学。
         请使用简体中文，按照用户确认后的题目理解逐步推导；
         每一步写清楚依据、公式和计算，不跳步，
         不使用“易知”“易得”“显然”等省略性表述；
@@ -166,3 +173,7 @@ app:
         你是一名专业、友好的中文 AI 助手。
         请使用简体中文回答，表达清晰、准确；
         如果用户的问题涉及你不确定的信息，请明确说明，不要编造。
+
+  followup:
+    # 每道题最多允许的追问次数；默认 3 次，设为 0 可关闭追问。
+    max-questions: ${FOLLOWUP_MAX_QUESTIONS:3}

@@ -2,6 +2,7 @@ package com.xhr.geometryhelperbackend.exception;
 
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.NoSuchElementException;
 
 import com.xhr.geometryhelperbackend.dto.ErrorResponse;
 import org.slf4j.Logger;
@@ -10,6 +11,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.HttpMediaTypeNotSupportedException;
+import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
@@ -98,13 +100,28 @@ public class GlobalExceptionHandler {
     /**
      * 业务参数错误，例如空文件、不支持的图片格式。
      *
+     * <p>参数错误属于正常业务分支，不写日志，也不把异常继续抛给容器。</p>
+     *
      * @return 400 Bad Request
      */
     @ExceptionHandler(IllegalArgumentException.class)
     public ResponseEntity<ErrorResponse> handleIllegalArgument(IllegalArgumentException exception) {
-        log.warn("bad request msg={}", exception.getMessage());
         return ResponseEntity.badRequest()
                 .body(error(exception.getMessage()));
+    }
+
+    /**
+     * 请求方法不支持，例如对只支持 POST 的接口发起 GET。
+     *
+     * <p>不记录日志，直接返回 405，避免正常的错误请求污染服务端日志。</p>
+     *
+     * @return 405 Method Not Allowed
+     */
+    @ExceptionHandler(HttpRequestMethodNotSupportedException.class)
+    public ResponseEntity<ErrorResponse> handleMethodNotSupported(
+            HttpRequestMethodNotSupportedException exception) {
+        return ResponseEntity.status(HttpStatus.METHOD_NOT_ALLOWED)
+                .body(error("不支持的请求方法，请检查请求方式"));
     }
 
     /**
@@ -119,6 +136,18 @@ public class GlobalExceptionHandler {
         log.error("大模型调用失败，内容为={}", exception.getMessage(), exception);
         return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
                 .body(error(exception.getMessage()));
+    }
+
+    /**
+     * 请求的题目不存在，或者不属于当前用户。
+     *
+     * @return 404 Not Found
+     */
+    @ExceptionHandler(NoSuchElementException.class)
+    public ResponseEntity<ErrorResponse> handleNoSuchElement(NoSuchElementException exception) {
+        log.warn("resource not found msg={}", exception.getMessage());
+        return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                .body(error(exception.getMessage() == null ? "未找到对应记录" : exception.getMessage()));
     }
 
     /**

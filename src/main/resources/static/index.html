@@ -13,8 +13,8 @@
   <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
   <link rel="icon" href="icons/icon-192.png" sizes="192x192" type="image/png">
   <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
-  <link rel="stylesheet" href="css/vendor/katex.min.css?v=1.0.13">
-  <link rel="stylesheet" href="css/app.css?v=1.0.13">
+  <link rel="stylesheet" href="css/vendor/katex.min.css?v=1.0.17">
+  <link rel="stylesheet" href="css/app.css?v=1.0.17">
   <title>几何助手 · 图片解析</title>
 </head>
 <body>
@@ -58,6 +58,12 @@
     </a>
 
     <div class="topbar__actions">
+      <a class="button button--ghost button--history" href="list.html">
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path d="M4 5h16M4 12h16M4 19h10"/>
+        </svg>
+        <span>历史记录</span>
+      </a>
       <div id="serviceStatus" class="status-pill status-pill--checking" role="status" aria-live="polite">
         <span class="status-pill__dot" aria-hidden="true"></span>
         <span id="serviceStatusText">检查服务中</span>
@@ -370,6 +376,58 @@
     <p>添加到主屏幕后，可以像应用一样打开。</p>
   </footer>
 
+  <button id="followupButton" class="followup-fab" type="button" hidden
+    aria-haspopup="dialog" aria-controls="followupDialog">
+    <span class="followup-fab__icon" aria-hidden="true">
+      <svg viewBox="0 0 24 24" focusable="false">
+        <path d="M20 11.5a7.5 7.5 0 0 1-8 7.5 9.2 9.2 0 0 1-3-.5L4 20l1.2-4.1A7.2 7.2 0 0 1 4 11.5 7.5 7.5 0 0 1 12 4a7.5 7.5 0 0 1 8 7.5Z"/>
+        <path d="M8.5 11.5h.01M12 11.5h.01M15.5 11.5h.01"/>
+      </svg>
+    </span>
+    <span class="followup-fab__text">追问</span>
+    <span id="followupCount" class="followup-fab__badge" hidden>0</span>
+  </button>
+
+  <dialog id="followupDialog" class="followup-dialog" aria-labelledby="followupTitle">
+    <div class="followup-dialog__panel">
+      <header class="followup-dialog__head">
+        <div>
+          <p class="step-label"><span>05</span> 追问</p>
+          <h2 id="followupTitle">哪里还没看懂？</h2>
+          <p id="followupMeta" class="followup-dialog__meta"></p>
+        </div>
+        <button id="closeFollowupButton" class="followup-close" type="button" aria-label="关闭追问">
+          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="m6 6 12 12M18 6 6 18"/>
+          </svg>
+        </button>
+      </header>
+
+      <div id="followupStatus" class="followup-status" role="status" aria-live="polite" hidden></div>
+      <div id="followupMessages" class="followup-messages" aria-live="polite"></div>
+      <div id="followupEmpty" class="followup-empty" hidden>
+        <span class="followup-empty__icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" focusable="false">
+            <path d="M20 11.5a7.5 7.5 0 0 1-8 7.5 9.2 9.2 0 0 1-3-.5L4 20l1.2-4.1A7.2 7.2 0 0 1 4 11.5 7.5 7.5 0 0 1 12 4a7.5 7.5 0 0 1 8 7.5Z"/>
+            <path d="M8 12h8M8 9h5"/>
+          </svg>
+        </span>
+        <p>还没有追问，遇到不明白的地方可以在这里问老师。</p>
+      </div>
+
+      <form id="followupForm" class="followup-form">
+        <label class="followup-form__label" for="followupInput">追问内容</label>
+        <textarea id="followupInput" class="followup-form__input" rows="3" maxlength="2000"
+          placeholder="例如：为什么这里要作这条辅助线？"></textarea>
+        <div class="followup-form__footer">
+          <span id="followupStepHint" class="followup-form__hint"></span>
+          <button id="followupSubmit" class="button button--primary" type="submit">发送追问</button>
+        </div>
+        <div id="followupError" class="result-alert result-alert--error" role="alert" hidden></div>
+      </form>
+    </div>
+  </dialog>
+
   <dialog id="previewDialog" class="preview-dialog" aria-labelledby="previewDialogTitle">
     <div class="preview-dialog__inner">
       <div class="preview-dialog__bar">
@@ -388,9 +446,10 @@
 
   <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 
-  <script src="js/vendor/marked.min.js?v=1.0.13"></script>
-  <script src="js/vendor/purify.min.js?v=1.0.13"></script>
-  <script src="js/vendor/katex.min.js?v=1.0.13"></script>
-  <script src="js/app.js?v=1.0.13"></script>
+  <script src="js/vendor/marked.min.js?v=1.0.17"></script>
+  <script src="js/vendor/purify.min.js?v=1.0.17"></script>
+  <script src="js/vendor/katex.min.js?v=1.0.17"></script>
+  <script src="js/markdown.js?v=1.0.17"></script>
+  <script src="js/app.js?v=1.0.17"></script>
 </body>
 </html>

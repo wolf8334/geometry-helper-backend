@@ -14,6 +14,8 @@ import com.xhr.geometryhelperbackend.exception.AiServiceException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.metadata.ChatResponseMetadata;
+import org.springframework.ai.chat.metadata.Usage;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.content.Media;
@@ -31,7 +33,9 @@ import org.springframework.web.multipart.MultipartFile;
  *     <li>识别阶段：把上传的图片转换成 Spring AI 的 {@link Media}，发送给
  *     {@code visionChatClient}，只复述题目内容；</li>
  *     <li>解题阶段：把用户确认后的题目复述、已经输出的讲解段落连同原图发送给
- *     独立的 {@code solveChatClient}，由解题模型像老师一样分步展开。</li>
+ *     独立的 {@code solveChatClient}，由解题模型像老师一样分步展开；</li>
+ *     <li>追问阶段：从数据库读取原图，连同题目复述、已生成讲解和全部历史追问
+ *     一起发送给解题模型。</li>
  * </ol>
  *
  * <p>这里选择“一次性读取到内存”的方式，原因是当前上传上限只有 10MB，
@@ -71,7 +75,7 @@ public class ImageSolveService {
     private static final int MAX_USER_NOTE_LENGTH = 500;
 
     /**
-     * 当前分步讲解的总段数。后续增加追问功能时，段数仍由这里统一控制。
+     * 当前分步讲解的总段数，正式讲解和追问都以此作为最大段落。
      */
     private static final int SOLVE_TOTAL_PARTS = 3;
 
@@ -79,6 +83,16 @@ public class ImageSolveService {
      * 已输出讲解内容的最大字符数，防止异常请求把提示词无限放大。
      */
     private static final int MAX_SOLVE_CONTEXT_LENGTH = 60_000;
+
+    /**
+     * 单次追问的最大字符数。
+     */
+    private static final int MAX_FOLLOWUP_QUESTION_LENGTH = 2_000;
+
+    /**
+     * 追问上下文的长度上限。超出时保留最近的内容，避免提示词无限增长。
+     */
+    private static final int MAX_FOLLOWUP_CONTEXT_LENGTH = 60_000;
 
     private final ChatClient visionChatClient;
 
@@ -104,9 +118,9 @@ public class ImageSolveService {
      *
      * @param file     上传的图片
      * @param userNote 用户补充说明，可为空
-     * @return 题目复述
+     * @return 题目复述及模型调用元数据
      */
-    public String analyzeImage(MultipartFile file, String userNote) {
+    public ModelCallResult analyzeImage(MultipartFile file, String userNote) {
         return callVisionModel(file, buildAnalyzeText(userNote, false), "题目识别");
     }
 
@@ -115,9 +129,9 @@ public class ImageSolveService {
      *
      * @param file     上传的图片
      * @param userNote 用户补充说明，可为空
-     * @return 重新识别后的题目复述
+     * @return 重新识别后的题目复述及模型调用元数据
      */
-    public String retryAnalyzeImage(MultipartFile file, String userNote) {
+    public ModelCallResult retryAnalyzeImage(MultipartFile file, String userNote) {
         return callVisionModel(file, buildAnalyzeText(userNote, true), "重新识别");
     }
 
@@ -136,9 +150,9 @@ public class ImageSolveService {
      * @param analysis 用户已确认的题目复述
      * @param part     当前要生成的段落，从 1 开始
      * @param history  已经生成的讲解内容，可为空
-     * @return 当前段落的讲解内容
+     * @return 当前段落的讲解内容及模型调用元数据
      */
-    public String solveImage(MultipartFile file, String userNote, String analysis,
+    public ModelCallResult solveImage(MultipartFile file, String userNote, String analysis,
             int part, String history) {
         if (!StringUtils.hasText(analysis)) {
             throw new IllegalArgumentException("请先确认题目复述，再开始解题");
@@ -150,7 +164,46 @@ public class ImageSolveService {
         MultipartFile solveFile = this.aiProperties.getSolve().isIncludeImage() ? file : null;
         return callChatModel(this.solveChatClient, solveFile,
                 buildSolveText(userNote, analysis, part, history),
-                "分步解题第" + part + "段", false);
+                "分步解题第" + part + "段", this.aiProperties.getSolve().getModel(), false);
+    }
+
+    /**
+     * 基于题目复述、已经生成的分步讲解和之前的追问记录，继续回答用户的问题。
+     *
+     * <p>追问复用正式解题引擎，并从数据库重新读取题目原图一并发送；同时带上
+     * 题目复述、已经生成的分步讲解和之前的追问记录，保证多轮问答上下文完整。</p>
+     *
+     * @param question        用户本次追问
+     * @param analysis        题目复述
+     * @param solutionHistory 已生成的分步讲解
+     * @param followupHistory 之前的追问记录
+     * @param step            用户提问时已展开到的段落
+     * @param maxSolvedPart   已生成的最大段落
+     * @param image           题目原图，可为空
+     * @return 追问回复及模型调用元数据
+     */
+    public ModelCallResult followUp(String question, String analysis, String solutionHistory,
+            String followupHistory, int step, int maxSolvedPart, QuestionImage image) {
+        if (!StringUtils.hasText(analysis)) {
+            throw new IllegalArgumentException("题目复述为空，暂时无法追问");
+        }
+
+        String userQuestion = normalizeFollowUpQuestion(question);
+        int safeMaxSolvedPart = Math.max(1, Math.min(maxSolvedPart, SOLVE_TOTAL_PARTS));
+        int safeStep = Math.max(1, Math.min(step, safeMaxSolvedPart));
+
+        ImageInput imageInput = null;
+        if (this.aiProperties.getSolve().isIncludeImage()
+                && image != null && image.data() != null && image.data().length > 0) {
+            imageInput = new ImageInput(image.data(),
+                    resolveMimeType(image.contentType(), image.filename()), image.filename());
+        }
+
+        String text = buildFollowUpText(userQuestion, analysis, solutionHistory,
+                followupHistory, safeStep, safeMaxSolvedPart, imageInput != null);
+
+        return callChatModel(this.solveChatClient, imageInput, text, "追问",
+                this.aiProperties.getSolve().getModel(), false);
     }
 
     /**
@@ -168,10 +221,11 @@ public class ImageSolveService {
      * @param file     上传的图片
      * @param userText 发送给模型的完整用户文本
      * @param operation 当前阶段名称，用于日志
-     * @return 模型返回的内容
+     * @return 模型返回的内容及元数据
      */
-    private String callVisionModel(MultipartFile file, String userText, String operation) {
-        return callChatModel(this.visionChatClient, file, userText, operation, true);
+    private ModelCallResult callVisionModel(MultipartFile file, String userText, String operation) {
+        return callChatModel(this.visionChatClient, file, userText, operation,
+                this.aiProperties.getVision().getModel(), true);
     }
 
     /**
@@ -184,25 +238,17 @@ public class ImageSolveService {
      * @param file        图片，可为空
      * @param userText    用户文本
      * @param operation   当前阶段名称，用于日志
+     * @param configuredModel 配置中的模型名称
      * @param requireImage 是否强制要求图片
-     * @return 模型返回的文本
+     * @return 模型返回的文本及元数据
      */
-    private String callChatModel(ChatClient chatClient, MultipartFile file, String userText,
-            String operation, boolean requireImage) {
-        boolean hasImage = file != null && !file.isEmpty();
-        if (requireImage && !hasImage) {
-            throw new IllegalArgumentException("上传文件不能为空");
-        }
-
-        MimeType mimeType = null;
-        byte[] imageBytes = null;
-        if (hasImage) {
+    private ModelCallResult callChatModel(ChatClient chatClient, MultipartFile file, String userText,
+            String operation, String configuredModel, boolean requireImage) {
+        ImageInput imageInput = null;
+        if (file != null && !file.isEmpty()) {
             // 1. 解析并校验 MIME 类型。不能只相信客户端传来的 Content-Type，
             //    因此 Content-Type 缺失或不合法时再根据扩展名兜底。
-            mimeType = resolveMimeType(file);
-            if (!"image".equalsIgnoreCase(mimeType.getType())) {
-                throw new IllegalArgumentException("只支持图片文件，当前文件类型为：" + mimeType);
-            }
+            MimeType mimeType = resolveMimeType(file);
 
             // 2. 读取原始图片字节。MultipartFile 的临时文件会在请求结束后被清理，
             //    所以必须在请求线程内完成读取。原始字节保留给历史记录使用，
@@ -214,11 +260,33 @@ public class ImageSolveService {
                 log.error("读取上传图片失败 文件名 {}", file.getOriginalFilename(), exception);
                 throw new AiServiceException("读取上传图片失败，请稍后重试", exception);
             }
+            imageInput = new ImageInput(originalImageBytes, mimeType, file.getOriginalFilename());
+        }
+
+        return callChatModel(chatClient, imageInput, userText, operation, configuredModel,
+                requireImage);
+    }
+
+    private ModelCallResult callChatModel(ChatClient chatClient, ImageInput imageInput,
+            String userText, String operation, String configuredModel, boolean requireImage) {
+        boolean hasImage = imageInput != null && imageInput.data() != null
+                && imageInput.data().length > 0;
+        if (requireImage && !hasImage) {
+            throw new IllegalArgumentException("上传文件不能为空");
+        }
+
+        MimeType mimeType = null;
+        byte[] imageBytes = null;
+        if (hasImage) {
+            mimeType = imageInput.mimeType();
+            if (mimeType == null || !"image".equalsIgnoreCase(mimeType.getType())) {
+                throw new IllegalArgumentException("只支持图片文件，当前文件类型为：" + mimeType);
+            }
 
             // 3. Bedrock/Claude 限制单张图片小于 5MB。所有引擎在调用模型前
-            //    都走同一套处理逻辑，避免视觉阶段或解题阶段各自遗漏。
+            //    都走同一套处理逻辑，避免视觉阶段、解题阶段或追问各自遗漏。
             ImageProcessingService.ProcessedImage processedImage = this.imageProcessingService
-                    .process(originalImageBytes, mimeType, file.getOriginalFilename());
+                    .process(imageInput.data(), mimeType, imageInput.filename());
             imageBytes = processedImage.bytes();
             mimeType = processedImage.mimeType();
         }
@@ -243,17 +311,18 @@ public class ImageSolveService {
                     .call()
                     .chatResponse();
 
-            String answer = extractAnswer(operation, response);
-            if (!StringUtils.hasText(answer)) {
+            long costMillis = (System.nanoTime() - startNanos) / 1_000_000;
+            ModelCallResult result = extractModelResult(operation, response,
+                    configuredModel, costMillis);
+            if (!StringUtils.hasText(result.answer())) {
                 throw new AiServiceException("大模型未返回有效内容，请稍后重试");
             }
 
-            long costMillis = (System.nanoTime() - startNanos) / 1_000_000;
-            log.info("{} 模型调用完成 带图片={} 发送图片={}KB 耗时={}s",
+            log.info("{} 模型调用完成 带图片={} 发送图片={}KB 耗时={}s 输入Token={} 输出Token={}",
                     operation, hasImage,
                     imageBytes == null ? 0 : imageBytes.length / 1024,
-                    costMillis / 1000);
-            return answer.trim();
+                    costMillis / 1000, result.inputTokens(), result.outputTokens());
+            return result;
         } catch (AiServiceException exception) {
             // 保留业务异常的原始信息，避免被下面的通用捕获再次包装。
             throw exception;
@@ -266,12 +335,14 @@ public class ImageSolveService {
     }
 
     /**
-     * 从响应中提取正文。Anthropic 原生响应直接读取 text block；
-     * 其他协议回退到最后一个非空 generation。
+     * 从响应中提取正文和可入库的元数据。Anthropic 原生响应直接读取
+     * text/thinking block；其他协议回退到最后一个非空 generation，
+     * 并尽量从 Spring AI 元数据中读取 Token 用量。
      */
-    private String extractAnswer(String operation, ChatResponse response) {
+    private ModelCallResult extractModelResult(String operation, ChatResponse response,
+            String configuredModel, long durationMs) {
         if (response == null) {
-            return "";
+            return new ModelCallResult("", configuredModel, null, null, durationMs, null, null);
         }
 
         Object rawResponse = response.getMetadata() == null
@@ -279,28 +350,57 @@ public class ImageSolveService {
                 : response.getMetadata().get("anthropic-response");
         if (rawResponse instanceof Message message) {
             StringBuilder text = new StringBuilder();
+            StringBuilder reasoning = new StringBuilder();
             for (ContentBlock block : message.content()) {
                 if (block.isText()) {
                     text.append(block.asText().text());
+                } else if (block.isThinking()) {
+                    reasoning.append(block.asThinking().thinking());
                 }
             }
-            if (StringUtils.hasText(text)) {
-                return text.toString();
+
+            String stopReason = message.stopReason().map(Object::toString).orElse(null);
+            Integer inputTokens = (int) message.usage().inputTokens();
+            Integer outputTokens = (int) message.usage().outputTokens();
+            if (!StringUtils.hasText(text)) {
+                log.warn("{} Anthropic 响应没有有效 text block，stopReason={} contentBlockCount={}",
+                        operation, stopReason, message.content().size());
             }
-            log.warn("{} Anthropic 响应没有有效 text block，stopReason={} contentBlockCount={}",
-                    operation, message.stopReason().orElse(null), message.content().size());
-            return "";
+
+            return new ModelCallResult(text.toString().trim(), configuredModel,
+                    inputTokens, outputTokens, durationMs,
+                    StringUtils.hasText(reasoning) ? reasoning.toString().trim() : null,
+                    stopReason);
         }
 
+        String answer = "";
         List<Generation> results = response.getResults();
         for (int index = results.size() - 1; index >= 0; index -= 1) {
             Generation generation = results.get(index);
             if (generation != null && generation.getOutput() != null
                     && StringUtils.hasText(generation.getOutput().getText())) {
-                return generation.getOutput().getText();
+                answer = generation.getOutput().getText();
+                break;
             }
         }
-        return "";
+
+        String modelName = configuredModel;
+        Integer inputTokens = null;
+        Integer outputTokens = null;
+        ChatResponseMetadata metadata = response.getMetadata();
+        if (metadata != null) {
+            Usage usage = metadata.getUsage();
+            if (usage != null) {
+                inputTokens = usage.getPromptTokens();
+                outputTokens = usage.getCompletionTokens();
+            }
+            if (StringUtils.hasText(metadata.getModel())) {
+                modelName = metadata.getModel();
+            }
+        }
+
+        return new ModelCallResult(answer.trim(), modelName, inputTokens, outputTokens,
+                durationMs, null, null);
     }
 
     /**
@@ -420,6 +520,86 @@ public class ImageSolveService {
     }
 
     /**
+     * 构造追问阶段的用户文本。
+     *
+     * <p>追问不是继续生成下一段，而是围绕用户当前看到的内容做解释。因此提示词
+     * 会明确限制模型不要重复整段讲解、不要主动剧透后续段落，并带上此前追问，
+     * 让多轮问答保持连贯。</p>
+     */
+    private String buildFollowUpText(String question, String analysis, String solutionHistory,
+            String followupHistory, int step, int maxSolvedPart, boolean hasImage) {
+        String knowledgeScope = normalizeKnowledgeScope(
+                this.aiProperties.getSolve().getKnowledgeScope());
+        String solutionBlock = normalizeFollowUpContext(solutionHistory);
+        String historyBlock = normalizeFollowUpContext(followupHistory);
+        String imageNote = hasImage
+                ? "本题原图已随本消息附上，请结合图片中的图形、标注和条件理解题目。\n\n"
+                : "";
+
+        return imageNote + """
+                用户已确认的题目复述：
+                %s
+
+                已经生成的分步讲解（目前生成到第 %d 段）：
+                %s
+
+                之前的追问记录（按时间顺序，包含用户问题和老师回答）：
+                %s
+
+                用户在看到第 %d 段讲解后提出新的追问：
+                %s
+
+                现在是追问环节，不是继续生成下一段。请结合题目原图（如有）、题目复述、
+                已经生成的讲解和上面的历史追问一起回答，不要只根据最后一句话作答：
+                1. 不要重复整段讲解，不要重新从头解题；
+                2. 如果用户问某一步的依据、计算或辅助线，请针对该步解释清楚，必要时补充一个小例子或反推；
+                3. 用户当前只看到第 %d 段，优先解释这一段及之前的内容；不要主动提前给出后续段落或最终答案，除非用户明确要求；
+                4. 不要向用户提问，不要要求用户“回答我”“写出来”或等待用户回复；
+                5. 使用简体中文和清晰的 Markdown；数学公式必须使用 LaTeX，行内公式用 $...$，独立公式用 $$...$$；
+                6. 只允许使用「%s」范围内的知识，不得使用超纲定理或超纲方法；
+                7. 如果用户的问题与当前题目无关，先简短指出，再尽量回到题目本身。
+                """.formatted(
+                analysis.trim(),
+                maxSolvedPart,
+                solutionBlock,
+                historyBlock,
+                step,
+                question,
+                step,
+                knowledgeScope);
+    }
+
+    /**
+     * 校验并规范化用户追问。
+     */
+    private String normalizeFollowUpQuestion(String question) {
+        if (!StringUtils.hasText(question)) {
+            throw new IllegalArgumentException("追问内容不能为空");
+        }
+        String value = question.trim();
+        if (value.length() > MAX_FOLLOWUP_QUESTION_LENGTH) {
+            throw new IllegalArgumentException(
+                    "追问内容不能超过 " + MAX_FOLLOWUP_QUESTION_LENGTH + " 个字");
+        }
+        return value;
+    }
+
+    /**
+     * 追问上下文超长时保留最近的内容，而不是直接拒绝用户。
+     */
+    private String normalizeFollowUpContext(String context) {
+        if (!StringUtils.hasText(context)) {
+            return "（暂无）";
+        }
+        String value = context.trim();
+        if (value.length() > MAX_FOLLOWUP_CONTEXT_LENGTH) {
+            return "（较早内容已省略）\n"
+                    + value.substring(value.length() - MAX_FOLLOWUP_CONTEXT_LENGTH);
+        }
+        return value;
+    }
+
+    /**
      * 规范化已输出的讲解前文，并限制长度。
      */
     private String normalizeSolveHistory(String history) {
@@ -434,12 +614,12 @@ public class ImageSolveService {
     }
 
     /**
-     * 规范化配置中的知识范围。配置为空时退回默认的初二数学范围。
+     * 规范化配置中的知识范围。配置为空时退回默认的初二及以前各学科范围。
      */
     private String normalizeKnowledgeScope(String knowledgeScope) {
         return StringUtils.hasText(knowledgeScope)
                 ? knowledgeScope.trim()
-                : "国内初二数学知识";
+                : "中国国内初二及以前各学科知识（不限于数学）";
     }
 
     /**
@@ -452,7 +632,14 @@ public class ImageSolveService {
      * @return 图片 MIME 类型
      */
     private MimeType resolveMimeType(MultipartFile file) {
-        String contentType = file.getContentType();
+        return resolveMimeType(file.getContentType(), file.getOriginalFilename());
+    }
+
+    /**
+     * 根据 MIME 类型和文件名推断图片格式。追问使用的是数据库中保存的原图，
+     * 其 MIME 和文件名可能为空，因此与上传文件共用同一套兜底逻辑。
+     */
+    private MimeType resolveMimeType(String contentType, String filename) {
         if (StringUtils.hasText(contentType)) {
             try {
                 MimeType parsed = MimeType.valueOf(contentType);
@@ -464,7 +651,7 @@ public class ImageSolveService {
             }
         }
 
-        String extension = StringUtils.getFilenameExtension(file.getOriginalFilename());
+        String extension = StringUtils.getFilenameExtension(filename);
         if (StringUtils.hasText(extension)) {
             String mimeType = EXTENSION_TO_MIME_TYPE.get(extension.toLowerCase(Locale.ROOT));
             if (mimeType != null) {
@@ -508,5 +695,11 @@ public class ImageSolveService {
                     "仅支持 jpg、jpeg、png、webp、gif、bmp、tiff 格式的图片");
         }
         return MimeType.valueOf("image/" + subtype);
+    }
+
+    /**
+     * 一次模型调用中携带的原始图片。上传文件和数据库原图都会转换成这个结构。
+     */
+    private record ImageInput(byte[] data, MimeType mimeType, String filename) {
     }
 }

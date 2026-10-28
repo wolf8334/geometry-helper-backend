@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0f766e">
+  <meta name="description" content="几何助手历史记录：查看题目复述、分步讲解和追问。">
+  <meta name="application-name" content="几何助手">
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="icon" href="icons/icon-192.png" sizes="192x192" type="image/png">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="stylesheet" href="css/vendor/katex.min.css?v=1.0.17">
+  <link rel="stylesheet" href="css/app.css?v=1.0.17">
+  <link rel="stylesheet" href="css/list.css?v=1.0.17">
+  <title>几何助手 · 历史记录</title>
+</head>
+<body>
+  <a class="skip-link" href="#main">跳到主要内容</a>
+
+  <div class="backdrop" aria-hidden="true">
+    <div class="backdrop__grid"></div>
+    <div class="backdrop__orb backdrop__orb--one"></div>
+    <div class="backdrop__orb backdrop__orb--two"></div>
+  </div>
+
+  <header class="topbar">
+    <a class="brand" href="./" aria-label="几何助手首页">
+      <span class="brand__mark" aria-hidden="true">
+        <svg viewBox="0 0 512 512" focusable="false">
+          <defs>
+            <linearGradient id="brand-bg" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0" stop-color="#14968b"/>
+              <stop offset="1" stop-color="#084a46"/>
+            </linearGradient>
+          </defs>
+          <rect width="512" height="512" rx="112" fill="url(#brand-bg)"/>
+          <path d="M256 94 128 364h256Z" fill="none" stroke="#fff" stroke-width="23"/>
+          <circle cx="256" cy="280" r="60" fill="none" stroke="#f0b35b" stroke-width="18"/>
+          <circle cx="256" cy="280" r="10" fill="#f0b35b"/>
+        </svg>
+      </span>
+      <span class="brand__text">
+        <strong>几何助手</strong>
+        <small>Geometry Helper</small>
+      </span>
+    </a>
+
+    <div class="topbar__actions">
+      <a class="button button--ghost" href="./">
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path d="M19 12H5m6-6-6 6 6 6"/>
+        </svg>
+        <span>返回解题</span>
+      </a>
+    </div>
+  </header>
+
+  <main id="main" class="page history-page" tabindex="-1">
+    <section class="history-hero" aria-labelledby="pageTitle">
+      <p class="eyebrow">HISTORY · REVIEW</p>
+      <h1 id="pageTitle">学习记录</h1>
+      <p class="hero__lead">回看识别过的题目、分段讲解和每一次追问。可以按时间、关键词或是否有追问筛选。</p>
+    </section>
+
+    <section class="card history-filter" aria-labelledby="filterTitle">
+      <div class="card__head">
+        <div>
+          <p class="step-label"><span>01</span> 查询条件</p>
+          <h2 id="filterTitle">找到想复习的题目</h2>
+        </div>
+        <span class="state-badge state-badge--idle">当前用户 #0</span>
+      </div>
+
+      <form id="filterForm" class="history-filter__form">
+        <div class="history-field">
+          <label for="fromDate">开始日期</label>
+          <input id="fromDate" name="from" type="date">
+        </div>
+        <div class="history-field">
+          <label for="toDate">结束日期</label>
+          <input id="toDate" name="to" type="date">
+        </div>
+        <div class="history-field history-field--keyword">
+          <label for="keyword">关键词</label>
+          <input id="keyword" name="keyword" type="search" maxlength="100"
+            placeholder="题目、讲解或追问内容">
+        </div>
+        <div class="history-field">
+          <label for="followupFilter">追问</label>
+          <select id="followupFilter" name="followup">
+            <option value="">全部</option>
+            <option value="true">有追问</option>
+            <option value="false">无追问</option>
+          </select>
+        </div>
+        <div class="history-field">
+          <label for="pageSize">每页</label>
+          <select id="pageSize" name="size">
+            <option value="10">10 条</option>
+            <option value="20">20 条</option>
+            <option value="50">50 条</option>
+          </select>
+        </div>
+        <div class="history-filter__actions">
+          <button id="searchButton" class="button button--primary" type="submit">
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <circle cx="11" cy="11" r="7"/>
+              <path d="m16.5 16.5 4 4"/>
+            </svg>
+            <span>查询</span>
+          </button>
+          <button id="resetButton" class="button button--secondary" type="reset">重置</button>
+        </div>
+      </form>
+    </section>
+
+    <div class="history-toolbar">
+      <p id="historySummary" class="history-summary" role="status" aria-live="polite">正在加载历史记录…</p>
+      <p class="history-toolbar__hint">点击讲解标题可以展开或收起。</p>
+    </div>
+
+    <div id="historyAlert" class="result-alert result-alert--error" role="alert" hidden></div>
+    <div id="historyList" class="history-list" aria-live="polite"></div>
+
+    <div id="historyEmpty" class="card empty-state history-empty" hidden>
+      <span class="empty-state__icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" focusable="false">
+          <path d="M5 4h14v16H5z"/>
+          <path d="M8 8h8M8 12h6M8 16h4"/>
+        </svg>
+      </span>
+      <h3>还没有符合条件的记录</h3>
+      <p>换一个时间范围或关键词再试试，也可以先回到首页上传一道几何题。</p>
+      <a class="button button--primary" href="./">去上传题目</a>
+    </div>
+
+    <div id="historyLoading" class="history-loading" hidden>
+      <span class="spinner" aria-hidden="true"></span>
+      <span>正在加载历史记录…</span>
+    </div>
+
+    <nav id="historyPager" class="history-pager" aria-label="历史记录分页" hidden>
+      <button id="prevPageButton" class="button button--secondary" type="button">上一页</button>
+      <span id="pageIndicator" class="history-pager__indicator"></span>
+      <button id="nextPageButton" class="button button--secondary" type="button">下一页</button>
+    </nav>
+  </main>
+
+  <dialog id="historyImageDialog" class="preview-dialog" aria-labelledby="historyImageDialogTitle">
+    <div class="preview-dialog__inner">
+      <div class="preview-dialog__bar">
+        <h2 id="historyImageDialogTitle">题目原图</h2>
+        <button id="closeHistoryImageButton" class="icon-button" type="button" aria-label="关闭大图">
+          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="m6 6 12 12M18 6 6 18"/>
+          </svg>
+        </button>
+      </div>
+      <div class="preview-dialog__canvas">
+        <img id="historyDialogImage" alt="题目原图大图">
+      </div>
+    </div>
+  </dialog>
+
+  <footer class="footer">
+    <p>几何助手 · 图片内容由 AI 生成，请自行核对。</p>
+    <p>历史记录当前归属未登录用户 #0。</p>
+  </footer>
+
+  <script src="js/vendor/marked.min.js?v=1.0.17"></script>
+  <script src="js/vendor/purify.min.js?v=1.0.17"></script>
+  <script src="js/vendor/katex.min.js?v=1.0.17"></script>
+  <script src="js/markdown.js?v=1.0.17"></script>
+  <script src="js/list.js?v=1.0.17"></script>
+</body>
+</html>

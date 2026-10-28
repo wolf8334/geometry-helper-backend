@@ -13,7 +13,8 @@ package com.xhr.geometryhelperbackend.dto;
  * @param part       当前讲解段落，从 1 开始；确认阶段为 0
  * @param totalParts 分步讲解总段数
  * @param done       分步讲解是否已经全部完成
+ * @param questionId 题目历史记录 ID，后续讲解和追问需要回传
  */
 public record SolveResponse(String msg, String stage, String analysis, String answer,
-        int part, int totalParts, boolean done) {
+        int part, int totalParts, boolean done, Long questionId) {
 }

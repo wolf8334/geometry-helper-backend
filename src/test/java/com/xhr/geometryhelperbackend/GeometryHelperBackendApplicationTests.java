@@ -2,6 +2,7 @@ package com.xhr.geometryhelperbackend;
 
 import com.xhr.geometryhelperbackend.config.AiConfig;
 import com.xhr.geometryhelperbackend.config.AiProperties;
+import com.xhr.geometryhelperbackend.config.FollowupProperties;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.anthropic.AnthropicChatModel;
 import org.springframework.ai.chat.client.ChatClient;
@@ -14,6 +15,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 @SpringBootTest(properties = {
         "app.ai.vision.model=vision-test",
@@ -42,16 +44,28 @@ class GeometryHelperBackendApplicationTests {
     @Autowired
     private AiProperties aiProperties;
 
+    @Autowired
+    private FollowupProperties followupProperties;
+
     @Test
     void contextLoads() {
     }
 
     /**
-     * 解题引擎默认只允许使用国内初二数学知识，后续可通过配置覆盖。
+     * 每道题默认最多追问三次，可通过 app.followup.max-questions 覆盖。
+     */
+    @Test
+    void followupLimitDefaultsToThree() {
+        assertEquals(3, this.followupProperties.getMaxQuestions());
+    }
+
+    /**
+     * 解题引擎默认只允许使用中国国内初二及以前各学科知识（不限于数学），后续可通过配置覆盖。
      */
     @Test
     void solveKnowledgeScopeDefaultsToJuniorGradeTwo() {
-        assertEquals("国内初二数学知识", this.aiProperties.getSolve().getKnowledgeScope());
+        assertEquals("中国国内初二及以前各学科知识（不限于数学）", this.aiProperties.getSolve().getKnowledgeScope());
+        assertTrue(this.aiProperties.getSolve().getSystemPrompt().contains("不限于数学"));
     }
 
     /**
