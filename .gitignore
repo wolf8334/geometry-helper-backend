@@ -19,6 +19,8 @@ target/
 *.iml
 *.ipr
 
+*.md
+
 ### NetBeans ###
 /nbproject/private/
 /nbbuild/
@@ -34,3 +36,6 @@ build/
 
 geometry-helper-backend-交付说明.docx
 logs/
+/src/test/
+/doc/
+/src/main/resources/db/init.sql
