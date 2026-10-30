@@ -1,5 +1,9 @@
 package com.xhr.geometryhelperbackend.controller;
 
+import java.util.stream.Collectors;
+
+import com.xhr.geometryhelperbackend.dto.QuestionDetail;
+import com.xhr.geometryhelperbackend.dto.SolutionPart;
 import com.xhr.geometryhelperbackend.dto.SolveResponse;
 import com.xhr.geometryhelperbackend.service.ImageSolveService;
 import com.xhr.geometryhelperbackend.service.ModelCallResult;
@@ -49,7 +53,7 @@ public class SolveController {
      * @param stage      阶段：analyze、retry、confirm 或 continue
      * @param analysis   用户确认过的题目复述，讲解阶段必填
      * @param part       当前讲解段落，从 1 开始；continue 阶段必填
-     * @param history    已经生成的讲解内容，continue 阶段用于携带上下文
+     * @param history    已弃用，仅为兼容旧前端保留；前文现在由服务端从数据库读取
      * @param questionId 题目历史记录 ID；识别后由服务端返回，讲解阶段回传
      * @return 当前阶段的结果
      */
@@ -67,12 +71,12 @@ public class SolveController {
         return switch (phase) {
             case "analyze" -> analyze(file, message);
             case "retry" -> retry(file, message, questionId);
-            case "confirm" -> solvePart(file, message, analysis, 1, history, questionId);
+            case "confirm" -> solvePart(file, message, analysis, 1, questionId);
             case "continue" -> {
                 if (part == null) {
                     throw new IllegalArgumentException("继续讲解时必须提供讲解段落");
                 }
-                yield solvePart(file, message, analysis, part, history, questionId);
+                yield solvePart(file, message, analysis, part, questionId);
             }
             default -> throw new IllegalArgumentException("不支持的阶段：" + stage);
         };
@@ -102,13 +106,33 @@ public class SolveController {
      * 调用解题引擎生成单段讲解，并补齐前端需要的段落信息。
      */
     private SolveResponse solvePart(MultipartFile file, String message, String analysis,
-            int part, String history, Long questionId) {
+            int part, Long questionId) {
         int totalParts = this.imageSolveService.getSolveTotalParts();
-        long savedQuestionId = this.questionHistoryService.ensureQuestion(
-                questionId, file, analysis);
+
+        // 第 1 段以用户刚确认的题目复述为准；后续段落的题目和前文都从数据库读取，
+        // 不再信任客户端回传，避免页面刷新或状态丢失后前后对不上。
+        String solveAnalysis = analysis;
+        String history = "";
+        if (part > 1) {
+            if (questionId == null) {
+                throw new IllegalArgumentException("缺少题目 ID，无法继续讲解");
+            }
+            QuestionDetail detail = this.questionHistoryService.getQuestionDetail(questionId);
+            if (part > detail.maxSolvedPart() + 1) {
+                throw new IllegalArgumentException("请先完成前面的讲解段落");
+            }
+            solveAnalysis = detail.questionText();
+            history = detail.solutionParts().stream()
+                    .filter(solved -> solved.part() < part)
+                    .map(SolutionPart::content)
+                    .collect(Collectors.joining("\n\n"));
+        }
+
+        // 先调用模型，成功后再写库，失败时不会留下残缺记录。
         ModelCallResult result = this.imageSolveService.solveImage(
-                file, message, analysis, part, history);
-        this.questionHistoryService.appendSolutionPart(savedQuestionId, part, message, result);
+                file, message, solveAnalysis, part, history);
+        long savedQuestionId = this.questionHistoryService.saveSolutionPart(
+                questionId, file, solveAnalysis, part, message, result);
 
         boolean done = part >= totalParts;
         String msg = done

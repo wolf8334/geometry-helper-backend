@@ -20,6 +20,7 @@
     historyList: $('historyList'),
     historyEmpty: $('historyEmpty'),
     historyLoading: $('historyLoading'),
+    historyLoadingText: $('historyLoadingText'),
     historyPager: $('historyPager'),
     prevPageButton: $('prevPageButton'),
     nextPageButton: $('nextPageButton'),
@@ -36,6 +37,7 @@
     items: [],
     loading: false,
     requestToken: 0,
+    retryTimer: null,
     previewTrigger: null
   };
 
@@ -112,25 +114,40 @@
   }
 
   async function loadHistory() {
+    clearHistoryRetry();
     const token = state.requestToken + 1;
     state.requestToken = token;
     state.loading = true;
+    dom.historyLoadingText.textContent = '正在加载历史记录…';
     setLoading(true);
     clearError();
 
     const params = buildQueryParams();
     const url = `${API_HISTORY}?${params.toString()}`;
     window.history.replaceState(null, '', `${window.location.pathname}?${params.toString()}`);
+    let transientFailure = false;
 
     try {
-      const response = await fetch(url, {
+      const response = await window.GeometryNet.fetchWithRetry(url, {
         headers: { Accept: 'application/json' },
         cache: 'no-store'
+      }, {
+        maxAttempts: 4,
+        onRetry: ({ attempt }) => {
+          if (token !== state.requestToken) return;
+          dom.historyLoadingText.textContent = navigator.onLine
+            ? `网络有点波动，正在第 ${attempt} 次自动重试…`
+            : '网络已断开，联网后会自动重试…';
+        }
       });
       const data = await readJson(response);
 
       if (token !== state.requestToken) return;
       if (!response.ok) {
+        if (window.GeometryNet.isRetryableStatus(response.status)) {
+          transientFailure = true;
+          return;
+        }
         showError(pickErrorMessage(response.status, data));
         return;
       }
@@ -143,17 +160,48 @@
       renderHistory();
     } catch (error) {
       if (token === state.requestToken) {
-        showError('加载历史记录失败，请检查网络后重试。');
+        transientFailure = true;
       }
     } finally {
       if (token === state.requestToken) {
         state.loading = false;
         setLoading(false);
-        if (dom.historyAlert.hidden) {
+        if (transientFailure) {
+          showRetryNotice();
+          scheduleHistoryRetry(token);
+        } else if (dom.historyAlert.hidden) {
           updateSummary();
         }
       }
     }
+  }
+
+  function clearHistoryRetry() {
+    if (state.retryTimer) {
+      window.clearTimeout(state.retryTimer);
+      state.retryTimer = null;
+    }
+  }
+
+  function scheduleHistoryRetry(token) {
+    clearHistoryRetry();
+    state.retryTimer = window.setTimeout(() => {
+      state.retryTimer = null;
+      if (token !== state.requestToken || state.loading) return;
+      loadHistory();
+    }, 12000);
+  }
+
+  function showRetryNotice() {
+    const message = navigator.onLine
+      ? '网络有点慢，正在等待自动重试…'
+      : '网络已断开，联网后会自动重试…';
+    dom.historySummary.textContent = message;
+    dom.historyLoadingText.textContent = message;
+    dom.historyLoading.hidden = false;
+    dom.historyList.hidden = true;
+    dom.historyEmpty.hidden = true;
+    dom.historyPager.hidden = true;
   }
 
   function buildQueryParams() {

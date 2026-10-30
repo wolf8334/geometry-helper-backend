@@ -157,6 +157,8 @@
     followupSending: false,
     followupLoadToken: 0,
     followupSendToken: 0,
+    followupRetryTimer: null,
+    followupNoticeTimer: null,
     followupTrigger: null,
     retryCount: 0,
     loadToken: 0,
@@ -677,6 +679,7 @@
 
     setUploadState(isSolve ? 'solving' : (stage === 'retry' ? 'retrying' : 'uploading'));
     startElapsedTimer();
+    let transientFailure = false;
 
     try {
       const formData = new FormData();
@@ -699,16 +702,24 @@
         }
       }
 
-      const response = await fetch(API_SOLVE, {
+      const response = await window.GeometryNet.fetchWithRetry(API_SOLVE, {
         method: 'POST',
         body: formData,
         headers: { Accept: 'application/json' },
         cache: 'no-store'
+      }, {
+        maxAttempts: 3,
+        onRetry: ({ attempt }) => showAutoRetryStatus(stage, attempt)
       });
 
       const data = await readJson(response);
 
       if (!response.ok) {
+        if (window.GeometryNet.isRetryableStatus(response.status)) {
+          transientFailure = true;
+          handleTransientFailure(stage);
+          return false;
+        }
         handlePhaseFailure(pickErrorMessage(response.status, data), stage);
         return false;
       }
@@ -752,13 +763,16 @@
       renderConfirmation(message, analysis, stage === 'retry');
       return true;
     } catch (error) {
-      let message = '上传失败，请检查网络后重试。';
       if (error && error.name === 'AbortError') {
-        message = isSolve ? '讲解生成超时，请稍后重试。' : '识别超时，请稍后重试。';
-      } else if (!navigator.onLine) {
-        message = '当前网络不可用，请联网后重试。';
+        handlePhaseFailure(
+          isSolve ? '讲解生成超时，请稍后重试。' : '识别超时，请稍后重试。',
+          stage
+        );
+        return false;
       }
-      handlePhaseFailure(message, stage);
+
+      transientFailure = true;
+      handleTransientFailure(stage);
       return false;
     } finally {
       state.uploading = false;
@@ -767,11 +781,15 @@
       if (isSolve) {
         if (state.uploadOutcome === true) {
           setUploadState(state.solveDone ? 'success' : 'part');
+        } else if (transientFailure) {
+          setUploadState(state.solveParts.some(Boolean) ? 'part' : 'confirm');
         } else {
           setUploadState('error');
         }
       } else if (state.analysis) {
         setUploadState('confirm');
+      } else if (transientFailure) {
+        setUploadState('preview');
       } else if (state.uploadOutcome === false) {
         setUploadState('error');
       } else {
@@ -795,6 +813,69 @@
     } else {
       renderError(message, '识别失败');
     }
+  }
+
+  function showAutoRetryStatus(stage, attempt) {
+    const offline = !navigator.onLine;
+    const message = offline
+      ? '网络已断开，联网后会自动继续…'
+      : `网络有点波动，正在第 ${attempt} 次自动重试…`;
+
+    dom.progressTitle.textContent = message;
+    dom.progressHint.textContent = offline
+      ? '恢复网络后会自动重新发起请求，请不要关闭页面。'
+      : '请求没有成功时会自动重试，请不要关闭页面。';
+
+    if (
+      (stage === 'confirm' || stage === 'continue')
+      && !dom.resultSection.hidden
+    ) {
+      dom.resultAlert.hidden = false;
+      dom.resultAlert.className = 'result-alert result-alert--info';
+      dom.resultAlert.textContent = message;
+    }
+  }
+
+  function handleTransientFailure(stage) {
+    state.uploadOutcome = null;
+    state.answerEmpty = false;
+
+    if (stage === 'confirm' || stage === 'continue') {
+      if (state.solveParts.some(Boolean)) {
+        restoreSolveResult();
+      } else {
+        clearResult();
+      }
+    } else {
+      clearResult();
+    }
+
+    showToast(navigator.onLine ? '网络有点慢，稍后再试一次' : '网络已断开，联网后再试');
+  }
+
+  function restoreSolveResult() {
+    dom.resultSection.hidden = false;
+    dom.resultSection.removeAttribute('aria-busy');
+    dom.resultTitle.textContent = state.solveDone ? '讲解完成' : '分步讲解';
+    dom.resultBadge.textContent = state.solveDone
+      ? '完成'
+      : `第 ${state.solvePart}/${state.solveTotal} 段`;
+    dom.resultBadge.className = 'state-badge state-badge--success';
+    dom.resultMeta.textContent = state.solveDone
+      ? `讲解完成 · ${formatNow()}`
+      : `第 ${state.solvePart} / ${state.solveTotal} 段 · ${formatNow()}`;
+    dom.resultAlert.hidden = true;
+    dom.resultAlert.textContent = '';
+    dom.resultAlert.className = 'result-alert';
+    dom.emptyResult.hidden = true;
+    dom.errorResult.hidden = true;
+    renderSolveParts({ openOnlyPart: state.solvePart });
+    dom.resultActions.hidden = false;
+    dom.continueSolveButton.hidden = state.solveDone;
+    dom.continueSolveButton.disabled = false;
+    dom.continueSolveText.textContent = '继续下一段';
+    dom.retryButton.hidden = true;
+    updateUploadAvailability();
   }
 
   async function readJson(response) {
@@ -1693,6 +1774,8 @@
   function closeFollowup() {
     state.followupLoadToken += 1;
     state.followupLoading = false;
+    clearFollowupRetry();
+    clearFollowupNotice();
 
     if (dom.followupDialog.open) {
       dom.followupDialog.close();
@@ -1716,6 +1799,7 @@
   async function loadFollowupThread() {
     if (!state.questionId) return;
 
+    clearFollowupRetry();
     const token = state.followupLoadToken + 1;
     state.followupLoadToken = token;
     state.followupLoading = true;
@@ -1723,19 +1807,36 @@
     dom.followupEmpty.hidden = true;
     dom.followupMessages.replaceChildren();
     updateFollowupFormState();
+    let transientFailure = false;
 
     try {
-      const response = await fetch(
+      const response = await window.GeometryNet.fetchWithRetry(
         `${API_HISTORY}/${encodeURIComponent(String(state.questionId))}`,
         {
           headers: { Accept: 'application/json' },
           cache: 'no-store'
+        },
+        {
+          maxAttempts: 4,
+          onRetry: () => {
+            if (token !== state.followupLoadToken) return;
+            setFollowupStatus(
+              navigator.onLine
+                ? '网络有点波动，正在自动重新加载追问…'
+                : '网络已断开，联网后会自动重新加载追问…'
+            );
+          }
         }
       );
       const data = await readJson(response);
 
       if (token !== state.followupLoadToken) return;
       if (!response.ok) {
+        if (window.GeometryNet.isRetryableStatus(response.status)) {
+          transientFailure = true;
+          renderFollowupMessages();
+          return;
+        }
         showFollowupError(pickErrorMessage(response.status, data));
         return;
       }
@@ -1757,15 +1858,47 @@
       updateFollowupButton();
     } catch (error) {
       if (token === state.followupLoadToken) {
-        showFollowupError('加载追问记录失败，请稍后重试。');
+        transientFailure = true;
+        renderFollowupMessages();
       }
     } finally {
       if (token === state.followupLoadToken) {
         state.followupLoading = false;
-        setFollowupStatus('');
+        if (transientFailure) {
+          setFollowupStatus(
+            navigator.onLine
+              ? '网络有点慢，正在等待自动重试…'
+              : '网络已断开，联网后会自动重试…'
+          );
+          scheduleFollowupThreadRetry(token);
+        } else {
+          setFollowupStatus('');
+        }
         updateFollowupFormState();
       }
     }
+  }
+
+  function clearFollowupRetry() {
+    if (state.followupRetryTimer) {
+      window.clearTimeout(state.followupRetryTimer);
+      state.followupRetryTimer = null;
+    }
+  }
+
+  function scheduleFollowupThreadRetry(token) {
+    clearFollowupRetry();
+    state.followupRetryTimer = window.setTimeout(() => {
+      state.followupRetryTimer = null;
+      if (
+        token !== state.followupLoadToken
+        || !dom.followupDialog.open
+        || state.followupSending
+      ) {
+        return;
+      }
+      loadFollowupThread();
+    }, 12000);
   }
 
   function renderFollowupMessages() {
@@ -1843,10 +1976,12 @@
     state.followupSending = true;
     updateFollowupFormState();
     clearFollowupError();
+    clearFollowupNotice();
     setFollowupStatus('老师正在思考…');
+    let transientFailure = false;
 
     try {
-      const response = await fetch(API_FOLLOWUP, {
+      const response = await window.GeometryNet.fetchWithRetry(API_FOLLOWUP, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -1858,11 +1993,25 @@
           step
         }),
         cache: 'no-store'
+      }, {
+        maxAttempts: 3,
+        onRetry: () => {
+          if (sendToken !== state.followupSendToken) return;
+          setFollowupStatus(
+            navigator.onLine
+              ? '网络有点波动，正在自动重试…'
+              : '网络已断开，联网后会自动重试…'
+          );
+        }
       });
       const data = await readJson(response);
 
       if (sendToken !== state.followupSendToken) return;
       if (!response.ok) {
+        if (window.GeometryNet.isRetryableStatus(response.status)) {
+          transientFailure = true;
+          return;
+        }
         showFollowupError(pickErrorMessage(response.status, data));
         return;
       }
@@ -1904,13 +2053,21 @@
       updateFollowupFormState();
     } catch (error) {
       if (sendToken === state.followupSendToken) {
-        showFollowupError('追问发送失败，请检查网络后重试。');
+        transientFailure = true;
       }
     } finally {
       if (sendToken === state.followupSendToken) {
         state.followupSending = false;
         updateFollowupFormState();
-        setFollowupStatus('');
+        if (transientFailure) {
+          showFollowupNotice(
+            navigator.onLine
+              ? '网络有点慢，请稍后再发送一次'
+              : '网络已断开，联网后再发送'
+          );
+        } else {
+          setFollowupStatus('');
+        }
       }
     }
   }
@@ -1928,6 +2085,24 @@
   function clearFollowupError() {
     dom.followupError.textContent = '';
     dom.followupError.hidden = true;
+  }
+
+  function showFollowupNotice(message) {
+    clearFollowupNotice();
+    setFollowupStatus(message);
+    state.followupNoticeTimer = window.setTimeout(() => {
+      state.followupNoticeTimer = null;
+      if (dom.followupStatus.textContent === message) {
+        setFollowupStatus('');
+      }
+    }, 5000);
+  }
+
+  function clearFollowupNotice() {
+    if (state.followupNoticeTimer) {
+      window.clearTimeout(state.followupNoticeTimer);
+      state.followupNoticeTimer = null;
+    }
   }
 
   function scrollFollowupToBottom() {

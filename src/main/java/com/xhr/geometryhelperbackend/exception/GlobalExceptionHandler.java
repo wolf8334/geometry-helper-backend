@@ -50,15 +50,29 @@ public class GlobalExceptionHandler {
     }
 
     /**
-     * 缺少 multipart 字段或普通请求参数。
+     * 缺少 multipart 字段。
      *
      * @return 400 Bad Request
      */
-    @ExceptionHandler({ MissingServletRequestPartException.class, MissingServletRequestParameterException.class })
-    public ResponseEntity<ErrorResponse> handleMissingPart(Exception exception) {
+    @ExceptionHandler(MissingServletRequestPartException.class)
+    public ResponseEntity<ErrorResponse> handleMissingPart(MissingServletRequestPartException exception) {
         log.warn("missing part msg={}", exception.getMessage());
         return ResponseEntity.badRequest()
-                .body(error("缺少文件字段 file，请使用 multipart/form-data 上传图片"));
+                .body(error("缺少文件字段 " + exception.getRequestPartName()
+                        + "，请使用 multipart/form-data 上传图片"));
+    }
+
+    /**
+     * 缺少普通请求参数。
+     *
+     * @return 400 Bad Request
+     */
+    @ExceptionHandler(MissingServletRequestParameterException.class)
+    public ResponseEntity<ErrorResponse> handleMissingParameter(
+            MissingServletRequestParameterException exception) {
+        log.warn("missing parameter msg={}", exception.getMessage());
+        return ResponseEntity.badRequest()
+                .body(error("缺少请求参数：" + exception.getParameterName()));
     }
 
     /**

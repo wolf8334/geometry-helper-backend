@@ -180,7 +180,27 @@ public class QuestionHistoryService {
     }
 
     /**
-     * 保存一段讲解的请求和模型回答。
+     * 模型生成成功后，在同一个事务里确保题目存在并保存这一段讲解。
+     *
+     * @param questionId 已有题目 ID，可为空
+     * @param file       原始图片，仅在需要补建题目时使用
+     * @param analysis   题目复述
+     * @param part       段落序号
+     * @param userNote   用户补充说明
+     * @param result     模型回答
+     * @return 题目 ID
+     */
+    @Transactional
+    public long saveSolutionPart(Long questionId, MultipartFile file, String analysis, int part,
+            String userNote, ModelCallResult result) {
+        long savedQuestionId = ensureQuestion(questionId, file, analysis);
+        appendSolutionPart(savedQuestionId, part, userNote, result);
+        return savedQuestionId;
+    }
+
+    /**
+     * 保存一段讲解的请求和模型回答。重新生成某一段时，会先清掉该段及之后的旧讲解，
+     * 避免出现重复或前后对不上的内容。
      *
      * @param questionId 题目 ID
      * @param part       段落序号
@@ -195,6 +215,10 @@ public class QuestionHistoryService {
         }
 
         lockQuestion(questionId);
+        this.jdbcTemplate.update(
+                "DELETE FROM geometry_message "
+                        + "WHERE question_id = ? AND phase = 'solve' AND step_no >= ?",
+                questionId, part);
         long sequenceNo = nextSequence(questionId);
 
         insertMessage(questionId, sequenceNo++, "user", "solve", "solution_request",

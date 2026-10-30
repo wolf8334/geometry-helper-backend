@@ -1,7 +1,7 @@
 'use strict';
 
 // Keep this version in sync with the ?v= query strings in index.html.
-const CACHE_VERSION = '1.0.17';
+const CACHE_VERSION = '1.0.18';
 const CACHE_NAME = `geometry-helper-${CACHE_VERSION}`;
 const SCOPE = self.registration.scope;
 const INDEX_URL = new URL('index.html', SCOPE).href;
@@ -10,15 +10,16 @@ const APP_SHELL = [
   '',
   'index.html',
   'list.html',
-  'css/app.css?v=1.0.17',
-  'css/list.css?v=1.0.17',
-  'css/vendor/katex.min.css?v=1.0.17',
-  'js/app.js?v=1.0.17',
-  'js/markdown.js?v=1.0.17',
-  'js/list.js?v=1.0.17',
-  'js/vendor/marked.min.js?v=1.0.17',
-  'js/vendor/purify.min.js?v=1.0.17',
-  'js/vendor/katex.min.js?v=1.0.17',
+  'css/app.css?v=1.0.18',
+  'css/list.css?v=1.0.18',
+  'css/vendor/katex.min.css?v=1.0.18',
+  'js/app.js?v=1.0.18',
+  'js/markdown.js?v=1.0.18',
+  'js/net.js?v=1.0.18',
+  'js/list.js?v=1.0.18',
+  'js/vendor/marked.min.js?v=1.0.18',
+  'js/vendor/purify.min.js?v=1.0.18',
+  'js/vendor/katex.min.js?v=1.0.18',
   'css/vendor/fonts/KaTeX_AMS-Regular.woff2',
   'css/vendor/fonts/KaTeX_Caligraphic-Bold.woff2',
   'css/vendor/fonts/KaTeX_Caligraphic-Regular.woff2',
