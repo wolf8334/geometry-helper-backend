@@ -1,7 +1,7 @@
 'use strict';
 
 // Keep this version in sync with the ?v= query strings in index.html.
-const CACHE_VERSION = '1.0.21';
+const CACHE_VERSION = '1.0.23';
 const CACHE_NAME = `geometry-helper-${CACHE_VERSION}`;
 const SCOPE = self.registration.scope;
 const INDEX_URL = new URL('index.html', SCOPE).href;
@@ -10,16 +10,18 @@ const APP_SHELL = [
   '',
   'index.html',
   'list.html',
-  'css/app.css?v=1.0.21',
-  'css/list.css?v=1.0.21',
-  'css/vendor/katex.min.css?v=1.0.21',
-  'js/app.js?v=1.0.21',
-  'js/markdown.js?v=1.0.21',
-  'js/net.js?v=1.0.21',
-  'js/list.js?v=1.0.21',
-  'js/vendor/marked.min.js?v=1.0.21',
-  'js/vendor/purify.min.js?v=1.0.21',
-  'js/vendor/katex.min.js?v=1.0.21',
+  'css/app.css?v=1.0.23',
+  'css/list.css?v=1.0.23',
+  'css/vendor/katex.min.css?v=1.0.23',
+  'js/app.js?v=1.0.23',
+  'js/markdown.js?v=1.0.23',
+  'js/furina-wait.js?v=1.0.23',
+  'js/net.js?v=1.0.23',
+  'js/list.js?v=1.0.23',
+  'js/vendor/marked.min.js?v=1.0.23',
+  'js/vendor/purify.min.js?v=1.0.23',
+  'js/vendor/katex.min.js?v=1.0.23',
+  'assets/furina-walk.webp',
   'css/vendor/fonts/KaTeX_AMS-Regular.woff2',
   'css/vendor/fonts/KaTeX_Caligraphic-Bold.woff2',
   'css/vendor/fonts/KaTeX_Caligraphic-Regular.woff2',

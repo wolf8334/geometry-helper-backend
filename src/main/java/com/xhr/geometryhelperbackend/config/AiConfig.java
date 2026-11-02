@@ -182,11 +182,14 @@ public class AiConfig {
                     + (anthropicProtocol ? "anthropic-base-url" : "base-url") + " 不能为空");
         }
 
-        // 只打印协议、模型和超时，不打印 API Key。
-        log.info("大模型初始化 engine={} provider={} protocol={} model={} timeout={}",
+        // 只打印协议、模型、思考模式和超时，不打印 API Key。
+        log.info("大模型初始化 engine={} provider={} protocol={} model={} thinking={} effort={} timeout={}",
                 engineName, engine.getProvider(),
                 anthropicProtocol ? "anthropic" : "openai-compatible",
-                engine.getModel(), engine.getTimeout());
+                engine.getModel(),
+                StringUtils.hasText(engine.getThinking()) ? engine.getThinking() : "auto",
+                StringUtils.hasText(engine.getEffort()) ? engine.getEffort() : "auto",
+                engine.getTimeout());
 
         if (anthropicProtocol) {
             AnthropicChatOptions.Builder optionsBuilder = AnthropicChatOptions.builder()
@@ -203,6 +206,22 @@ public class AiConfig {
             if (StringUtils.hasText(engine.getEffort())) {
                 optionsBuilder.effort(OutputConfig.Effort.of(
                         engine.getEffort().trim().toLowerCase()));
+            }
+
+            // [Claude 添加] 思考模式可配置（app.ai.<engine>.thinking）：
+            // off 显式关闭 extended thinking，让正文更早开始输出；
+            // adaptive 使用自适应思考；auto/留空则不发送，沿用网关默认值。
+            // 识别题目和分步解题通常不需要长时间思考，默认在配置里设为 off。
+            String thinking = StringUtils.hasText(engine.getThinking())
+                    ? engine.getThinking().trim().toLowerCase(Locale.ROOT) : "auto";
+            switch (thinking) {
+                case "auto" -> {
+                    // 不发送 thinking 参数。
+                }
+                case "off", "disabled", "none" -> optionsBuilder.thinkingDisabled();
+                case "adaptive" -> optionsBuilder.thinkingAdaptive();
+                default -> throw new IllegalStateException("AI 引擎[" + engineName
+                        + "]的 thinking 只能是 auto / off / adaptive，当前为：" + engine.getThinking());
             }
 
             return AnthropicChatModel.builder()

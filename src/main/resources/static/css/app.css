@@ -1345,6 +1345,15 @@ img {
   content: "收起";
 }
 
+/*
+ * 流式生成时右侧只显示“生成中”，不再叠加“收起”。
+ * 提交后这一段会被完整重绘，恢复正常的“展开/收起”提示。
+ */
+.solve-part--streaming .solve-part__state::before,
+.solve-part--streaming[open] .solve-part__state::before {
+  content: none;
+}
+
 .solve-part__body {
   padding: 0.7em 14px 14px;
 }
@@ -2728,5 +2737,144 @@ body.dialog-open {
   .button--history {
     width: 40px;
     padding: 0;
+  }
+}
+
+/* ==========================================================================
+   芙宁娜等待动画
+   精灵图 1536×416 = 8 列 × 2 行（上排向右、下排向左），帧 192×208。
+   走动与朝向切换用 CSS 动画完成：15s 内从左侧走到右侧再走回，
+   走到边界时由 opacity 关键帧切换朝向，行走帧由 steps(8) 切换。
+   轨道用 linear 保持匀速，避免中途加速产生拖影。
+   素材来源与许可见 assets/furina-walk.LICENSE.txt。
+   ========================================================================== */
+.furina-wait-host {
+  --furina-scale: 0.38;
+  position: relative;
+  min-height: 118px;
+}
+
+.furina-wait {
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: 2px;
+  height: calc(208px * var(--furina-scale));
+  z-index: 2;
+  opacity: 1;
+  pointer-events: none;
+  transition: opacity 220ms ease;
+}
+
+.furina-wait.is-leaving {
+  opacity: 0;
+}
+
+.furina-wait__walker {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  width: calc(192px * var(--furina-scale));
+  height: calc(208px * var(--furina-scale));
+  animation: furina-walk-lane 15s linear infinite;
+  will-change: left;
+}
+
+.furina-wait__sprite {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 192px;
+  height: 208px;
+  background-image: url("../assets/furina-walk.webp");
+  background-repeat: no-repeat;
+  background-size: 1536px 416px;
+  transform: scale(var(--furina-scale));
+  transform-origin: bottom left;
+  animation: furina-walk-frames 1875ms steps(8) infinite;
+  will-change: background-position, transform;
+}
+
+.furina-wait__sprite--right {
+  background-position: 0 0;
+  animation:
+    furina-walk-frames 1875ms steps(8) infinite,
+    furina-face-right 15s linear infinite;
+}
+
+.furina-wait__sprite--left {
+  background-position: 0 -208px;
+  animation:
+    furina-walk-frames 1875ms steps(8) infinite,
+    furina-face-left 15s linear infinite;
+}
+
+@keyframes furina-walk-lane {
+  0% {
+    left: 0;
+  }
+
+  50% {
+    left: calc(100% - 192px * var(--furina-scale));
+  }
+
+  100% {
+    left: 0;
+  }
+}
+
+@keyframes furina-walk-frames {
+  from {
+    background-position-x: 0;
+  }
+
+  to {
+    background-position-x: -1536px;
+  }
+}
+
+@keyframes furina-face-right {
+  0%,
+  49.99% {
+    opacity: 1;
+  }
+
+  50%,
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes furina-face-left {
+  0%,
+  49.99% {
+    opacity: 0;
+  }
+
+  50%,
+  100% {
+    opacity: 1;
+  }
+}
+
+@media (max-width: 520px) {
+  .furina-wait-host {
+    --furina-scale: 0.32;
+    min-height: 102px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .furina-wait__walker,
+  .furina-wait__sprite {
+    animation: none;
+  }
+
+  .furina-wait__sprite--right {
+    opacity: 1;
+  }
+
+  .furina-wait__sprite--left {
+    display: none;
   }
 }

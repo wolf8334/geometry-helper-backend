@@ -1,0 +1,21 @@
+芙宁娜行走精灵图（furina-walk.webp）
+=====================================
+
+来源
+----
+- 参考项目：https://github.com/kline-dev/furina-dsh-pet
+- 原始素材：https://petdex.dev/pets/furina-2
+- 文件来源：参考项目 pet-assets/sprite-clean.png
+- 本文件为该雪碧图第 2、3 行（running-right / running-left，帧 192×208）
+  的裁切，仅保留本题等待动画需要的两行动作，未重绘角色形象。
+
+版权与许可
+----------
+参考项目的代码部分使用 MIT License；但 pet-assets/ 下的芙宁娜美术素材版权归
+petdex.dev 原作者所有，仓库内明确注明“仅限个人/学习用途”。
+
+因此本素材仅用于本项目的个人学习场景：
+- 不得用于商业用途或对外再分发；
+- 请通过 petdex 官方渠道支持原作者。
+
+如果后续需要商用或公开分发，请先取得原作者授权，或移除该素材与动画。

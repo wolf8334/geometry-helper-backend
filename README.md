@@ -41,11 +41,27 @@
 | `error` | `{"message":"...","retryable":true}` | 流中错误；`retryable=false` 表示参数或资源问题，不应自动重试 |
 | `done` | `{}` | 正常结束 |
 
-- 只有 `delta` 会进入页面正文；模型的思考/推理内容不会发送给前端；
+- 只有 `delta` 会进入页面正文；模型的思考/推理内容不会进入正文或历史记录，等待阶段只在正文区域显示行走动画，不再显示“正在思考”文字；
+- 流式显示时正文按纯文本增量刷新，公式在收尾符号到达后立即用 KaTeX 排版；还没闭合的半截公式暂不显示，避免页面上出现 `$\frac{...` 这样的原始片段；
 - `commit` 发出前数据已经写入数据库，前端只在收到 `commit` 后确认成功；
 - 连接在 `commit` 之前中断（网络、超时或服务端 5xx）时，前端会自动重试；
 - 服务端每 10 秒发送一次 SSE 注释帧（`:ping`）作为心跳，页面上不可见；
 - 文件缺失、参数错误等发生在流开始前的问题仍然是普通 JSON + 4xx 状态码。
+
+### 0.1 等待动画
+
+在还没有收到可展示正文时（包括模型 Thinking 阶段），识别题目、每一段讲解和
+追问回复的正文区域会显示一个左右走动的芙宁娜等待动画：
+
+- 只有 `delta` 正文增量会结束动画；`thinking` 事件不会；
+- 动画是 `assets/furina-walk.webp` 的两行精灵图，用 CSS `steps(8)` 逐帧播放，
+  15 秒一个来回、匀速行走，走到边界后自动切换左右朝向；
+- 等待期间正文区域只有动画，不再叠加“老师正在思考…”之类的文字；
+- 请求失败、超时、取消或收到完整结果时都会清理动画，不会残留；
+- 页面开启 `prefers-reduced-motion` 时只显示静态角色；
+- 素材来自 [furina-dsh-pet](https://github.com/kline-dev/furina-dsh-pet) /
+  [petdex](https://petdex.dev/pets/furina-2)，版权归原作者，仅限个人/学习用途，
+  详见 `static/assets/furina-walk.LICENSE.txt`。
 
 ### 1. 健康检查
 
@@ -357,7 +373,10 @@ src/main/resources
     ├── js/app.js                   # 主页面交互
     ├── js/list.js                  # 历史筛选和渲染
     ├── js/net.js                   # 共享的自动重试和 SSE 流解析
-    └── js/markdown.js              # 共享的 Markdown + KaTeX 渲染
+    ├── js/markdown.js              # 共享的 Markdown + KaTeX 渲染
+    ├── js/furina-wait.js           # AI 等待阶段的芙宁娜行走动画
+    ├── assets/furina-walk.webp     # 行走精灵图（两行，来源见同目录 LICENSE）
+    └── assets/furina-walk.LICENSE.txt
 ```
 
 ---
@@ -473,12 +492,13 @@ $env:CHAT_MODEL="openai/gpt-6.1-sol"
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `VISION_PROVIDER` | `siliconflow` | 供应商标识 |
-| `VISION_MODEL` | `Qwen/Qwen2.5-VL-72B-Instruct` | 必须支持图片输入 |
+| `VISION_PROVIDER` | `ofox` | 供应商标识 |
+| `VISION_MODEL` | `anthropic/claude-haiku-5.5` | 必须支持图片输入 |
 | `VISION_TEMPERATURE` | `0.2` | 采样温度 |
-| `VISION_MAX_TOKENS` | `1024` | 最大输出 token |
-| `VISION_TIMEOUT` | `120s` | 请求超时 |
+| `VISION_MAX_TOKENS` | `65536` | 最大输出 token |
+| `VISION_TIMEOUT` | `600s` | 请求超时 |
 | `VISION_MAX_RETRIES` | `2` | SDK 重试次数 |
+| `VISION_THINKING` | `off` | 思考模式 `auto`/`off`/`adaptive`（仅 Anthropic 协议） |
 
 解题引擎：
 
@@ -487,9 +507,10 @@ $env:CHAT_MODEL="openai/gpt-6.1-sol"
 | `SOLVE_PROVIDER` | `ofox` | 供应商标识 |
 | `SOLVE_MODEL` | `anthropic/claude-haiku-5.5` | 建议支持图片输入 |
 | `SOLVE_TEMPERATURE` | `0.2` | 采样温度 |
-| `SOLVE_MAX_TOKENS` | `8192` | 单段最大输出 token |
+| `SOLVE_MAX_TOKENS` | `65536` | 单段最大输出 token |
 | `SOLVE_INCLUDE_IMAGE` | `false` | 讲解和追问时是否携带原图 |
-| `SOLVE_EFFORT` | `high` | 解题思考强度（low/medium/high/xhigh/max，留空不发送，仅 Anthropic 协议） |
+| `SOLVE_EFFORT` | `low` | 解题思考强度（low/medium/high/xhigh/max，留空不发送，仅 Anthropic 协议） |
+| `SOLVE_THINKING` | `off` | 思考模式 `auto`/`off`/`adaptive`（仅 Anthropic 协议） |
 | `SOLVE_KNOWLEDGE_SCOPE` | `中国国内初二及以前各学科知识（不限于数学）` | 允许使用的知识范围 |
 
 追问：
@@ -502,12 +523,13 @@ $env:CHAT_MODEL="openai/gpt-6.1-sol"
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `CHAT_PROVIDER` | `siliconflow` | 供应商标识 |
-| `CHAT_MODEL` | `Qwen/Qwen2.5-72B-Instruct` | 纯文本模型 |
-| `CHAT_TEMPERATURE` | `0.7` | 采样温度 |
-| `CHAT_MAX_TOKENS` | `2048` | 最大输出 token |
-| `CHAT_TIMEOUT` | `60s` | 请求超时 |
+| `CHAT_PROVIDER` | `ofox` | 供应商标识 |
+| `CHAT_MODEL` | `anthropic/claude-haiku-5.5` | 纯文本模型 |
+| `CHAT_TEMPERATURE` | `0.1` | 采样温度 |
+| `CHAT_MAX_TOKENS` | `65536` | 最大输出 token |
+| `CHAT_TIMEOUT` | `120s` | 请求超时 |
 | `CHAT_MAX_RETRIES` | `2` | SDK 重试次数 |
+| `CHAT_THINKING` | `auto` | 思考模式 `auto`/`off`/`adaptive`（仅 Anthropic 协议） |
 | `CHAT_MAX_HISTORY_MESSAGES` | `20` | 最多携带的历史消息条数 |
 
 数据库：

@@ -114,6 +114,9 @@ app:
       max-tokens: ${VISION_MAX_TOKENS:65536}
       timeout: 600s
       max-retries: 2
+      # [Claude 添加] 识别题目不需要长时间思考，默认关闭 extended thinking，
+      # 让正文更早开始输出；需要时改回 auto 或 adaptive。
+      thinking: ${VISION_THINKING:off}
       system-prompt: |
         你是一名专业、严谨的图片内容描述助手。
         请始终使用简体中文回答，客观描述图片中能够确认的信息；
@@ -142,8 +145,12 @@ app:
       max-retries: 2
       include-image: ${SOLVE_INCLUDE_IMAGE:false}
       # [Claude 添加] 思考强度：low / medium / high / xhigh / max，留空表示不发送。
-      # 原先固定为 high；首个事件等待过久时可以调低，例如 SOLVE_EFFORT=low。
-      effort: ${SOLVE_EFFORT:high}
+      # 首个事件等待过久时调低；默认已改为 low。
+      effort: ${SOLVE_EFFORT:low}
+      # [Claude 添加] 思考模式：auto / off / adaptive。
+      # 默认关闭 extended thinking，避免长时间空白后正文一次性刷出；
+      # 如果发现讲解质量下降，可设 SOLVE_THINKING=adaptive 恢复自适应思考。
+      thinking: ${SOLVE_THINKING:off}
       # 解题引擎允许使用的知识范围。当前先限制为中国国内初二及以前各学科知识（不限于数学）；
       # 后续细化时直接改这里，或通过环境变量覆盖。
       knowledge-scope: ${SOLVE_KNOWLEDGE_SCOPE:中国国内初二及以前各学科知识（不限于数学）}
@@ -170,6 +177,9 @@ app:
       max-tokens: ${CHAT_MAX_TOKENS:65536}
       timeout: 120s
       max-retries: 2
+      # [Claude 添加] 思考模式：auto / off / adaptive，默认沿用网关设置。
+      # 如果普通对话也出现长时间空白后一次性输出，可设 CHAT_THINKING=off。
+      thinking: ${CHAT_THINKING:auto}
       # 最多携带最近多少条历史消息，防止多轮对话 token 无限增长。
       max-history-messages: 20
       system-prompt: |

@@ -667,8 +667,7 @@
 
   function updateStreamingAnalysis(text) {
     dom.confirmMarkdown.hidden = false;
-    dom.confirmMarkdown.classList.add('markdown--plain');
-    dom.confirmMarkdown.textContent = text;
+    window.GeometryMarkdown.renderStreaming(dom.confirmMarkdown, text);
   }
 
   function restoreAnalysisPreview() {
@@ -755,18 +754,20 @@
 
   function updateStreamingSolvePart(body, text) {
     if (!body) return;
-    body.classList.add('markdown--plain');
-    body.textContent = text;
+    window.GeometryMarkdown.renderStreaming(body, text);
   }
 
-  // [Claude 添加] 模型思考期间（还没有正文）显示的提示。只显示一行和递增的字数，
-  // 不滚动显示思考内容，避免文字高度不断变化导致页面抖动。
-  const THINKING_HINT = '老师正在思考…';
+  // [Claude 修改] 等待动画统一入口；脚本未加载时静默降级，不影响原有请求。
+  function showFurinaWait(container) {
+    if (container && window.GeometryFurinaWait) {
+      window.GeometryFurinaWait.show(container);
+    }
+  }
 
-  function thinkingDisplay(thinkingText) {
-    return thinkingText
-      ? `${THINKING_HINT}（已思考 ${thinkingText.length} 字）`
-      : THINKING_HINT;
+  function stopFurinaWait(container, immediate = false) {
+    if (container && window.GeometryFurinaWait) {
+      window.GeometryFurinaWait.stop(container, { immediate });
+    }
   }
 
   async function runPhase(stage, options = {}) {
@@ -800,26 +801,18 @@
     startElapsedTimer();
     let transientFailure = false;
     let streamedText = '';
-    let thinkingText = '';
     let streamingBody = null;
-
-    const showThinking = () => {
-      if (isSolve) {
-        updateStreamingSolvePart(streamingBody, thinkingDisplay(thinkingText));
-      } else {
-        updateStreamingAnalysis(thinkingDisplay(thinkingText));
-      }
-    };
 
     const resetStream = () => {
       streamedText = '';
-      thinkingText = '';
+      // 等待期间只显示行走动画，不再叠加“老师正在思考…”文字。
       if (isSolve) {
         streamingBody = prepareStreamingSolvePart(requestedPart, totalParts);
+        showFurinaWait(streamingBody);
       } else {
         beginStreamingAnalysis(stage === 'retry');
+        showFurinaWait(dom.confirmMarkdown);
       }
-      showThinking();
     };
 
     try {
@@ -846,12 +839,13 @@
       }, {
         maxAttempts: 3,
         onAttemptStart: resetStream,
-        onThinking: ({ text }) => {
-          if (streamedText) return;
-          thinkingText += text;
-          showThinking();
+        onThinking: () => {
+          // 思考内容不进入正文，也不结束等待动画；等待期间只显示芙宁娜。
         },
         onDelta: ({ text }) => {
+          if (!text) return;
+          // 只有真正可展示的正文才结束等待动画，thinking 事件不会走到这里。
+          stopFurinaWait(isSolve ? streamingBody : dom.confirmMarkdown);
           streamedText += text;
           if (isSolve) {
             updateStreamingSolvePart(streamingBody, streamedText);
@@ -926,6 +920,7 @@
       handleTransientFailure(stage);
       return false;
     } finally {
+      stopFurinaWait(isSolve ? streamingBody : dom.confirmMarkdown);
       state.uploading = false;
       stopElapsedTimer();
 
@@ -1353,6 +1348,11 @@
   }
 
   function renderMarkdown(text, container = dom.markdownResult) {
+    if (window.GeometryMarkdown && window.GeometryMarkdown.stopStreaming) {
+      window.GeometryMarkdown.stopStreaming(container);
+    }
+    // 完整重绘会替换 innerHTML，等待动画必须立即移除，避免残留节点。
+    stopFurinaWait(container, true);
     container.classList.remove('markdown--plain');
 
     if (!window.marked || !window.DOMPurify) {
@@ -2072,7 +2072,8 @@
       if (isAssistant) {
         if (message.streaming) {
           bubble.classList.add('markdown--plain');
-          bubble.textContent = message.content || '正在思考…';
+          // 等待动画负责提示，不再写入“正在思考…”文字占位。
+          bubble.textContent = message.content || '';
         } else {
           bubble.classList.add('markdown');
           renderMarkdown(message.content || '', bubble);
@@ -2117,17 +2118,20 @@
     renderFollowupMessages();
   }
 
-  function updateStreamingFollowupMessage(assistantId, text) {
+  function streamingFollowupBubble(assistantId) {
     const wrapper = dom.followupMessages.querySelector(
       `[data-message-id="${assistantId}"]`
     );
-    if (!wrapper) return;
+    if (!wrapper) return null;
+    return wrapper.querySelector('.followup-message__bubble');
+  }
 
-    const bubble = wrapper.querySelector('.followup-message__bubble');
+  function updateStreamingFollowupMessage(assistantId, text) {
+    const bubble = streamingFollowupBubble(assistantId);
     if (!bubble) return;
 
     bubble.classList.add('markdown--plain');
-    bubble.textContent = text || '正在思考…';
+    window.GeometryMarkdown.renderStreaming(bubble, text || '');
     scrollFollowupToBottom();
   }
 
@@ -2174,13 +2178,14 @@
     updateFollowupFormState();
     clearFollowupError();
     clearFollowupNotice();
-    setFollowupStatus('老师正在思考…');
+    // 等待状态由气泡里的芙宁娜动画表达，这里不再重复“老师正在思考…”。
+    setFollowupStatus('');
 
     const tempUserId = -Date.now();
     const tempAssistantId = tempUserId - 1;
     let streamedText = '';
-    let thinkingText = '';
     let transientFailure = false;
+    let streamingBubble = null;
 
     try {
       const outcome = await window.GeometryNet.streamRequest(API_FOLLOWUP, {
@@ -2199,16 +2204,19 @@
         onAttemptStart: () => {
           if (sendToken !== state.followupSendToken) return;
           streamedText = '';
-          thinkingText = '';
+          // 重试会重建气泡，先把旧气泡上的动画清掉。
+          stopFurinaWait(streamingBubble, true);
           resetStreamingFollowupMessages(message, step, tempUserId, tempAssistantId);
+          streamingBubble = streamingFollowupBubble(tempAssistantId);
+          showFurinaWait(streamingBubble);
         },
-        onThinking: ({ text }) => {
-          if (sendToken !== state.followupSendToken || streamedText) return;
-          thinkingText += text;
-          updateStreamingFollowupMessage(tempAssistantId, thinkingDisplay(thinkingText));
+        onThinking: () => {
+          // 思考内容不进入正文；等待期间气泡里只保留行走动画。
         },
         onDelta: ({ text }) => {
-          if (sendToken !== state.followupSendToken) return;
+          if (sendToken !== state.followupSendToken || !text) return;
+          // 与解题流程一致：思考内容不结束动画，只有正文增量才结束。
+          stopFurinaWait(streamingBubble);
           streamedText += text;
           updateStreamingFollowupMessage(tempAssistantId, streamedText);
         },
@@ -2227,6 +2235,7 @@
       const data = outcome && outcome.commit ? outcome.commit : null;
       const answer = data && typeof data.answer === 'string' ? data.answer.trim() : '';
       if (!answer) {
+        stopFurinaWait(streamingBubble, true);
         removeStreamingFollowupMessages(tempUserId, tempAssistantId);
         renderFollowupMessages();
         showFollowupError('系统未返回追问回复，请重试。');
@@ -2235,6 +2244,7 @@
 
       const now = new Date().toISOString();
       const answeredStep = data && Number.isInteger(data.step) ? data.step : step;
+      stopFurinaWait(streamingBubble, true);
       removeStreamingFollowupMessages(tempUserId, tempAssistantId);
       state.followupMessages.push({
         id: Date.now(),
@@ -2265,6 +2275,7 @@
       updateFollowupFormState();
     } catch (error) {
       if (sendToken === state.followupSendToken) {
+        stopFurinaWait(streamingBubble, true);
         removeStreamingFollowupMessages(tempUserId, tempAssistantId);
         renderFollowupMessages();
 
@@ -2276,6 +2287,7 @@
         transientFailure = true;
       }
     } finally {
+      stopFurinaWait(streamingBubble);
       if (sendToken === state.followupSendToken) {
         state.followupSending = false;
         updateFollowupFormState();

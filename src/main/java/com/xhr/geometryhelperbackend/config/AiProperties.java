@@ -183,12 +183,27 @@ public class AiProperties {
          */
         private String effort;
 
+        /**
+         * [Claude 添加] Anthropic 协议的思考模式：auto / off / adaptive。
+         * auto（默认）不发送 thinking 参数，沿用网关默认值；off 显式关闭思考，
+         * 让正文更早到达；adaptive 使用自适应思考。对 OpenAI 兼容协议无效。
+         */
+        private String thinking = "auto";
+
         public String getEffort() {
             return this.effort;
         }
 
         public void setEffort(String effort) {
             this.effort = effort;
+        }
+
+        public String getThinking() {
+            return this.thinking;
+        }
+
+        public void setThinking(String thinking) {
+            this.thinking = thinking;
         }
 
         public String getProvider() {
