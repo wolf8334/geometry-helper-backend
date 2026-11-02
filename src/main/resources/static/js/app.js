@@ -651,6 +651,124 @@
     }
   }
 
+  function beginStreamingAnalysis(isRetry) {
+    dom.confirmSection.hidden = false;
+    dom.confirmTitle.textContent = isRetry ? '正在重新识别题目…' : '正在识别题目…';
+    dom.confirmBadge.textContent = isRetry ? '重新识别中' : '识别中';
+    dom.confirmBadge.className = 'state-badge state-badge--loading';
+    dom.confirmMeta.textContent = '正在读取图片和补充说明…';
+    dom.confirmMarkdown.hidden = false;
+    dom.confirmMarkdown.classList.add('markdown--plain');
+    dom.confirmMarkdown.textContent = '';
+    dom.confirmActions.hidden = true;
+    hideConfirmAlert();
+    scrollToElement(dom.confirmSection);
+  }
+
+  function updateStreamingAnalysis(text) {
+    dom.confirmMarkdown.hidden = false;
+    dom.confirmMarkdown.classList.add('markdown--plain');
+    dom.confirmMarkdown.textContent = text;
+  }
+
+  function restoreAnalysisPreview() {
+    if (!state.analysis) {
+      clearConfirmation();
+      return;
+    }
+
+    const solved = state.solveParts.some(Boolean);
+    dom.confirmSection.hidden = false;
+    dom.confirmTitle.textContent = solved ? '已确认的题目复述' : '题目复述';
+    dom.confirmBadge.textContent = solved ? '已确认' : '待核对';
+    dom.confirmBadge.className = solved
+      ? 'state-badge state-badge--success'
+      : 'state-badge state-badge--loading';
+    dom.confirmMarkdown.hidden = false;
+    dom.confirmActions.hidden = solved;
+    renderMarkdown(state.analysis, dom.confirmMarkdown);
+  }
+
+  function prepareStreamingSolvePart(part, total) {
+    state.solveTotal = total;
+    dom.resultSection.hidden = false;
+    dom.resultSection.setAttribute('aria-busy', 'true');
+    dom.resultTitle.textContent = '分步讲解';
+    dom.resultBadge.textContent = `第 ${part}/${total} 段`;
+    dom.resultBadge.className = 'state-badge state-badge--loading';
+    dom.resultMeta.textContent = '';
+    dom.emptyResult.hidden = true;
+    dom.errorResult.hidden = true;
+
+    let details = dom.markdownResult.querySelector('.solve-part--streaming');
+    if (!details) {
+      renderSolveParts({ openOnlyPart: state.solvePart });
+
+      details = document.createElement('details');
+      details.className = 'solve-part solve-part--streaming';
+      details.dataset.part = String(part);
+      details.open = true;
+
+      const summary = document.createElement('summary');
+      summary.className = 'solve-part__summary';
+      summary.title = '正在生成';
+
+      const title = document.createElement('span');
+      title.className = 'solve-part__title';
+      title.textContent = solvePartLabel(part);
+
+      const stateHint = document.createElement('span');
+      stateHint.className = 'solve-part__state';
+      stateHint.setAttribute('aria-hidden', 'true');
+      stateHint.textContent = '生成中';
+
+      const body = document.createElement('div');
+      body.className = 'markdown solve-part__body markdown--plain';
+
+      summary.append(title, stateHint);
+      details.append(summary, body);
+      details.addEventListener('toggle', () => {
+        if (details.open) {
+          scheduleFitDisplayMath(details);
+        }
+      });
+
+      dom.markdownResult.appendChild(details);
+      dom.markdownResult.hidden = false;
+    }
+
+    const body = details.querySelector('.solve-part__body');
+    body.classList.add('markdown--plain');
+    body.textContent = '';
+
+    dom.resultAlert.hidden = false;
+    dom.resultAlert.className = 'result-alert result-alert--info';
+    dom.resultAlert.textContent = `正在生成第 ${part} 段讲解…`;
+
+    dom.resultActions.hidden = false;
+    dom.continueSolveButton.hidden = false;
+    dom.continueSolveButton.disabled = true;
+    dom.continueSolveText.textContent = '生成中…';
+    dom.retryButton.hidden = true;
+    return body;
+  }
+
+  function updateStreamingSolvePart(body, text) {
+    if (!body) return;
+    body.classList.add('markdown--plain');
+    body.textContent = text;
+  }
+
+  // [Claude 添加] 模型思考期间（还没有正文）显示的提示。只显示一行和递增的字数，
+  // 不滚动显示思考内容，避免文字高度不断变化导致页面抖动。
+  const THINKING_HINT = '老师正在思考…';
+
+  function thinkingDisplay(thinkingText) {
+    return thinkingText
+      ? `${THINKING_HINT}（已思考 ${thinkingText.length} 字）`
+      : THINKING_HINT;
+  }
+
   async function runPhase(stage, options = {}) {
     if (state.uploading) return false;
 
@@ -675,11 +793,34 @@
       // 重新识别时立刻清掉上一次的错误提示和旧结果。
       clearResult();
       hideConfirmAlert();
+      beginStreamingAnalysis(stage === 'retry');
     }
 
     setUploadState(isSolve ? 'solving' : (stage === 'retry' ? 'retrying' : 'uploading'));
     startElapsedTimer();
     let transientFailure = false;
+    let streamedText = '';
+    let thinkingText = '';
+    let streamingBody = null;
+
+    const showThinking = () => {
+      if (isSolve) {
+        updateStreamingSolvePart(streamingBody, thinkingDisplay(thinkingText));
+      } else {
+        updateStreamingAnalysis(thinkingDisplay(thinkingText));
+      }
+    };
+
+    const resetStream = () => {
+      streamedText = '';
+      thinkingText = '';
+      if (isSolve) {
+        streamingBody = prepareStreamingSolvePart(requestedPart, totalParts);
+      } else {
+        beginStreamingAnalysis(stage === 'retry');
+      }
+      showThinking();
+    };
 
     try {
       const formData = new FormData();
@@ -696,33 +837,32 @@
       if (isSolve) {
         formData.append('analysis', state.analysis);
         formData.append('part', String(requestedPart));
-        const history = buildSolveHistory();
-        if (history) {
-          formData.append('history', history);
-        }
       }
 
-      const response = await window.GeometryNet.fetchWithRetry(API_SOLVE, {
+      const outcome = await window.GeometryNet.streamRequest(API_SOLVE, {
         method: 'POST',
         body: formData,
-        headers: { Accept: 'application/json' },
         cache: 'no-store'
       }, {
         maxAttempts: 3,
+        onAttemptStart: resetStream,
+        onThinking: ({ text }) => {
+          if (streamedText) return;
+          thinkingText += text;
+          showThinking();
+        },
+        onDelta: ({ text }) => {
+          streamedText += text;
+          if (isSolve) {
+            updateStreamingSolvePart(streamingBody, streamedText);
+          } else {
+            updateStreamingAnalysis(streamedText);
+          }
+        },
         onRetry: ({ attempt }) => showAutoRetryStatus(stage, attempt)
       });
 
-      const data = await readJson(response);
-
-      if (!response.ok) {
-        if (window.GeometryNet.isRetryableStatus(response.status)) {
-          transientFailure = true;
-          handleTransientFailure(stage);
-          return false;
-        }
-        handlePhaseFailure(pickErrorMessage(response.status, data), stage);
-        return false;
-      }
+      const data = outcome && outcome.commit ? outcome.commit : null;
 
       if (data && Number.isInteger(data.questionId)) {
         state.questionId = data.questionId;
@@ -764,6 +904,7 @@
       return true;
     } catch (error) {
       if (error && error.name === 'AbortError') {
+        if (!isSolve) restoreAnalysisPreview();
         handlePhaseFailure(
           isSolve ? '讲解生成超时，请稍后重试。' : '识别超时，请稍后重试。',
           stage
@@ -771,7 +912,17 @@
         return false;
       }
 
+      if (error && error.retryable === false) {
+        if (!isSolve) restoreAnalysisPreview();
+        handlePhaseFailure(
+          error.message || '请求失败，请检查后重试。',
+          stage
+        );
+        return false;
+      }
+
       transientFailure = true;
+      if (!isSolve) restoreAnalysisPreview();
       handleTransientFailure(stage);
       return false;
     } finally {
@@ -984,14 +1135,6 @@
     setFollowupStatus('');
     clearFollowupError();
     updateFollowupButton();
-  }
-
-  function buildSolveHistory() {
-    return state.solveParts
-      .map((answer, index) => ({ answer, index }))
-      .filter((item) => Boolean(item.answer))
-      .map((item) => `【第 ${item.index + 1} 段】\n${item.answer}`)
-      .join('\n\n');
   }
 
   function storeSolvePart(part, answer) {
@@ -1913,7 +2056,9 @@
     messages.forEach((message) => {
       const isAssistant = message.role === 'assistant';
       const wrapper = document.createElement('article');
-      wrapper.className = `followup-message followup-message--${isAssistant ? 'assistant' : 'user'}`;
+      wrapper.dataset.messageId = String(message.id);
+      wrapper.className = `followup-message followup-message--${isAssistant ? 'assistant' : 'user'}`
+        + (message.streaming ? ' followup-message--streaming' : '');
 
       const meta = document.createElement('div');
       meta.className = 'followup-message__meta';
@@ -1925,8 +2070,13 @@
       const bubble = document.createElement('div');
       bubble.className = 'followup-message__bubble';
       if (isAssistant) {
-        bubble.classList.add('markdown');
-        renderMarkdown(message.content || '', bubble);
+        if (message.streaming) {
+          bubble.classList.add('markdown--plain');
+          bubble.textContent = message.content || '正在思考…';
+        } else {
+          bubble.classList.add('markdown');
+          renderMarkdown(message.content || '', bubble);
+        }
       } else {
         bubble.textContent = message.content || '';
       }
@@ -1938,6 +2088,53 @@
     dom.followupMessages.appendChild(fragment);
     scheduleFitDisplayMath(dom.followupMessages);
     scrollFollowupToBottom();
+  }
+
+  function resetStreamingFollowupMessages(userMessage, step, userId, assistantId) {
+    state.followupMessages = state.followupMessages.filter(
+      (message) => message.id !== userId && message.id !== assistantId
+    );
+
+    const now = new Date().toISOString();
+    state.followupMessages.push({
+      id: userId,
+      role: 'user',
+      content: userMessage,
+      stepNo: step,
+      modelName: '',
+      createdAt: now
+    });
+    state.followupMessages.push({
+      id: assistantId,
+      role: 'assistant',
+      content: '',
+      stepNo: step,
+      modelName: '',
+      createdAt: now,
+      streaming: true
+    });
+
+    renderFollowupMessages();
+  }
+
+  function updateStreamingFollowupMessage(assistantId, text) {
+    const wrapper = dom.followupMessages.querySelector(
+      `[data-message-id="${assistantId}"]`
+    );
+    if (!wrapper) return;
+
+    const bubble = wrapper.querySelector('.followup-message__bubble');
+    if (!bubble) return;
+
+    bubble.classList.add('markdown--plain');
+    bubble.textContent = text || '正在思考…';
+    scrollFollowupToBottom();
+  }
+
+  function removeStreamingFollowupMessages(userId, assistantId) {
+    state.followupMessages = state.followupMessages.filter(
+      (message) => message.id !== userId && message.id !== assistantId
+    );
   }
 
   async function sendFollowup(event) {
@@ -1978,14 +2175,18 @@
     clearFollowupError();
     clearFollowupNotice();
     setFollowupStatus('老师正在思考…');
+
+    const tempUserId = -Date.now();
+    const tempAssistantId = tempUserId - 1;
+    let streamedText = '';
+    let thinkingText = '';
     let transientFailure = false;
 
     try {
-      const response = await window.GeometryNet.fetchWithRetry(API_FOLLOWUP, {
+      const outcome = await window.GeometryNet.streamRequest(API_FOLLOWUP, {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
-          Accept: 'application/json'
+          'Content-Type': 'application/json'
         },
         body: JSON.stringify({
           questionId,
@@ -1995,6 +2196,22 @@
         cache: 'no-store'
       }, {
         maxAttempts: 3,
+        onAttemptStart: () => {
+          if (sendToken !== state.followupSendToken) return;
+          streamedText = '';
+          thinkingText = '';
+          resetStreamingFollowupMessages(message, step, tempUserId, tempAssistantId);
+        },
+        onThinking: ({ text }) => {
+          if (sendToken !== state.followupSendToken || streamedText) return;
+          thinkingText += text;
+          updateStreamingFollowupMessage(tempAssistantId, thinkingDisplay(thinkingText));
+        },
+        onDelta: ({ text }) => {
+          if (sendToken !== state.followupSendToken) return;
+          streamedText += text;
+          updateStreamingFollowupMessage(tempAssistantId, streamedText);
+        },
         onRetry: () => {
           if (sendToken !== state.followupSendToken) return;
           setFollowupStatus(
@@ -2004,26 +2221,21 @@
           );
         }
       });
-      const data = await readJson(response);
 
       if (sendToken !== state.followupSendToken) return;
-      if (!response.ok) {
-        if (window.GeometryNet.isRetryableStatus(response.status)) {
-          transientFailure = true;
-          return;
-        }
-        showFollowupError(pickErrorMessage(response.status, data));
-        return;
-      }
 
+      const data = outcome && outcome.commit ? outcome.commit : null;
       const answer = data && typeof data.answer === 'string' ? data.answer.trim() : '';
       if (!answer) {
+        removeStreamingFollowupMessages(tempUserId, tempAssistantId);
+        renderFollowupMessages();
         showFollowupError('系统未返回追问回复，请重试。');
         return;
       }
 
       const now = new Date().toISOString();
       const answeredStep = data && Number.isInteger(data.step) ? data.step : step;
+      removeStreamingFollowupMessages(tempUserId, tempAssistantId);
       state.followupMessages.push({
         id: Date.now(),
         role: 'user',
@@ -2053,6 +2265,14 @@
       updateFollowupFormState();
     } catch (error) {
       if (sendToken === state.followupSendToken) {
+        removeStreamingFollowupMessages(tempUserId, tempAssistantId);
+        renderFollowupMessages();
+
+        if (error && error.retryable === false) {
+          showFollowupError(error.message || '追问失败，请检查后重试。');
+          return;
+        }
+
         transientFailure = true;
       }
     } finally {

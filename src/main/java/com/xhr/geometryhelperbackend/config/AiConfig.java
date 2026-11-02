@@ -198,10 +198,11 @@ public class AiConfig {
                     .timeout(engine.getTimeout())
                     .maxRetries(engine.getMaxRetries());
 
-            // 正式解题使用高强度思考：对应 Anthropic 请求中的
-            // output_config.effort=high。
-            if ("solve".equals(engineName)) {
-                optionsBuilder.effort(OutputConfig.Effort.HIGH);
+            // [Claude 修改] 思考强度改为可配置（app.ai.<engine>.effort），
+            // 对应 Anthropic 请求中的 output_config.effort；留空则不发送。
+            if (StringUtils.hasText(engine.getEffort())) {
+                optionsBuilder.effort(OutputConfig.Effort.of(
+                        engine.getEffort().trim().toLowerCase()));
             }
 
             return AnthropicChatModel.builder()

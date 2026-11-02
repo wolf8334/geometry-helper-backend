@@ -93,9 +93,9 @@ app:
         base-url: https://api.siliconflow.cn/v1
         api-key: ${SILICONFLOW_API_KEY:}
       ofox:
-        base-url: https://api.ofox.ai/v1
+        base-url: https://api.ofox.io/v1
         # 模型 ID 以 anthropic 开头时，AiConfig 会自动改用 Anthropic Messages 协议。
-        anthropic-base-url: https://api.ofox.ai/anthropic
+        anthropic-base-url: https://api.ofox.io/anthropic
         api-key: ${OFOX_API_KEY:}
       ds:
         base-url: https://api.deepseek.com/v1
@@ -128,8 +128,8 @@ app:
 
     # -------------------------------------------------------------------------
     # 正式解题引擎
-    # 默认同时接收用户确认后的题目复述、已生成的前文和原图；如果解题模型只
-    # 支持文本，可设置 include-image: false。
+    # [Claude 修改] 默认只接收用户确认后的题目复述和已生成的前文，不再发送原图；
+    # 需要让模型重新核对图形时可设置 include-image: true。
     # 当 provider=ofox 且 model 以 anthropic 开头时，AiConfig 会自动切换到
     # Anthropic Messages 协议，并改用上面的 ofox.anthropic-base-url。
     # -------------------------------------------------------------------------
@@ -140,7 +140,10 @@ app:
       max-tokens: ${SOLVE_MAX_TOKENS:65536}
       timeout: 300s
       max-retries: 2
-      include-image: ${SOLVE_INCLUDE_IMAGE:true}
+      include-image: ${SOLVE_INCLUDE_IMAGE:false}
+      # [Claude 添加] 思考强度：low / medium / high / xhigh / max，留空表示不发送。
+      # 原先固定为 high；首个事件等待过久时可以调低，例如 SOLVE_EFFORT=low。
+      effort: ${SOLVE_EFFORT:high}
       # 解题引擎允许使用的知识范围。当前先限制为中国国内初二及以前各学科知识（不限于数学）；
       # 后续细化时直接改这里，或通过环境变量覆盖。
       knowledge-scope: ${SOLVE_KNOWLEDGE_SCOPE:中国国内初二及以前各学科知识（不限于数学）}

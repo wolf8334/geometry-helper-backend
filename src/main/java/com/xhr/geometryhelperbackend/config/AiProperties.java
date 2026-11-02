@@ -177,6 +177,20 @@ public class AiProperties {
          */
         private String systemPrompt;
 
+        /**
+         * [Claude 添加] Anthropic 协议的思考强度：low / medium / high / xhigh / max。
+         * 为空时不发送该参数，由模型使用默认值；对 OpenAI 兼容协议无效。
+         */
+        private String effort;
+
+        public String getEffort() {
+            return this.effort;
+        }
+
+        public void setEffort(String effort) {
+            this.effort = effort;
+        }
+
         public String getProvider() {
             return this.provider;
         }
@@ -274,15 +288,15 @@ public class AiProperties {
     /**
      * 正式解题引擎配置。
      *
-     * <p>默认同时接收确认后的题目分析文本和原图，方便模型重新核对图形；
-     * 如果解题模型只支持文本，可以设置 {@code include-image=false}。</p>
+     * <p>[Claude 修改] 默认只接收用户确认后的题目复述文本，不再发送原图，
+     * 请求更小、首字更快；如需让模型重新核对图形，可设置 {@code include-image=true}。</p>
      */
     public static class Solve extends Engine {
 
         /**
          * 正式解题时是否把原图一并发送给解题模型。
          */
-        private boolean includeImage = true;
+        private boolean includeImage = false;
 
         /**
          * 解题时允许使用的知识范围。默认先限制为中国国内初二及以前各学科知识（不限于数学），

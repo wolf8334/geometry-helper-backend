@@ -1,6 +1,5 @@
 package com.xhr.geometryhelperbackend.service;
 
-import java.io.IOException;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
 import java.time.ZoneId;
@@ -25,7 +24,6 @@ import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
-import org.springframework.web.multipart.MultipartFile;
 import tools.jackson.core.JacksonException;
 import tools.jackson.databind.ObjectMapper;
 
@@ -116,7 +114,7 @@ public class QuestionHistoryService {
      * @return 新题目 ID
      */
     @Transactional
-    public long createQuestionWithRecognition(MultipartFile file, String userNote,
+    public long createQuestionWithRecognition(UploadedImage file, String userNote,
             ModelCallResult result) {
         ensureAnonymousUser();
         long questionId = insertQuestion(file, result.answer());
@@ -134,7 +132,7 @@ public class QuestionHistoryService {
      * @return 题目 ID
      */
     @Transactional
-    public long saveRecognition(Long questionId, MultipartFile file, String userNote,
+    public long saveRecognition(Long questionId, UploadedImage file, String userNote,
             ModelCallResult result) {
         if (questionId == null) {
             return createQuestionWithRecognition(file, userNote, result);
@@ -158,7 +156,7 @@ public class QuestionHistoryService {
      * @return 题目 ID
      */
     @Transactional
-    public long ensureQuestion(Long questionId, MultipartFile file, String analysis) {
+    public long ensureQuestion(Long questionId, UploadedImage file, String analysis) {
         if (!StringUtils.hasText(analysis)) {
             throw new IllegalArgumentException("请先确认题目复述，再开始解题");
         }
@@ -171,7 +169,7 @@ public class QuestionHistoryService {
             return questionId;
         }
 
-        if (file == null || file.isEmpty()) {
+        if (file == null || !file.hasData()) {
             throw new IllegalArgumentException("缺少题目图片，无法保存解题记录");
         }
 
@@ -191,7 +189,7 @@ public class QuestionHistoryService {
      * @return 题目 ID
      */
     @Transactional
-    public long saveSolutionPart(Long questionId, MultipartFile file, String analysis, int part,
+    public long saveSolutionPart(Long questionId, UploadedImage file, String analysis, int part,
             String userNote, ModelCallResult result) {
         long savedQuestionId = ensureQuestion(questionId, file, analysis);
         appendSolutionPart(savedQuestionId, part, userNote, result);
@@ -459,21 +457,15 @@ public class QuestionHistoryService {
     /**
      * 新建题目记录，保存原始图片字节。
      */
-    private long insertQuestion(MultipartFile file, String questionText) {
+    private long insertQuestion(UploadedImage file, String questionText) {
         byte[] imageBytes = null;
         String contentType = null;
         String filename = null;
 
-        if (file != null && !file.isEmpty()) {
-            try {
-                imageBytes = file.getBytes();
-            } catch (IOException exception) {
-                throw new IllegalStateException("读取上传图片失败，请稍后重试", exception);
-            }
-            contentType = StringUtils.hasText(file.getContentType())
-                    ? file.getContentType()
-                    : "application/octet-stream";
-            filename = file.getOriginalFilename();
+        if (file != null && file.hasData()) {
+            imageBytes = file.data();
+            contentType = file.storedContentType();
+            filename = file.filename();
         }
 
         Long questionId = this.jdbcTemplate.queryForObject(

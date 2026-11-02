@@ -3,6 +3,7 @@ package com.xhr.geometryhelperbackend.service;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.function.Consumer;
 
 import com.xhr.geometryhelperbackend.config.AiConfig;
 import com.xhr.geometryhelperbackend.config.AiProperties;
@@ -44,22 +45,27 @@ public class ChatService {
 
     private final AiProperties aiProperties;
 
+    private final ModelStreamCaller modelStreamCaller;
+
     public ChatService(@Qualifier(AiConfig.CHAT_CHAT_CLIENT) ChatClient chatClient,
-            AiProperties aiProperties) {
+            AiProperties aiProperties, ModelStreamCaller modelStreamCaller) {
         this.chatClient = chatClient;
         this.aiProperties = aiProperties;
+        this.modelStreamCaller = modelStreamCaller;
     }
 
     /**
-     * 调用普通对话引擎。
+     * 调用普通对话引擎，并把正文增量实时交给调用方。
      *
      * @param message 当前这一轮的用户消息
      * @param history 历史消息，可为 {@code null} 或空列表
-     * @return 模型返回的文本
+     * @param onDelta 正文增量回调
+     * @return 完整回答及模型调用元数据
      * @throws IllegalArgumentException 消息为空、历史角色不合法等参数问题
      * @throws AiServiceException      模型调用失败
      */
-    public String chat(String message, List<ChatMessage> history) {
+    public ModelCallResult chatStream(String message, List<ChatMessage> history,
+            Consumer<String> onDelta) {
         if (!StringUtils.hasText(message)) {
             throw new IllegalArgumentException("message 不能为空");
         }
@@ -67,39 +73,14 @@ public class ChatService {
         List<Message> messages = buildHistoryMessages(history);
         messages.add(new UserMessage(message.trim()));
 
-        long startNanos = System.nanoTime();
-        try {
-            // 系统提示词已经在 AiConfig 的 ChatClient 中设置为默认值。
-            // 这里传入历史消息和当前用户消息，ChatClient 会自动把系统提示词放在最前面。
-            String answer = this.chatClient.prompt()
-                    .messages(messages)
-                    .call()
-                    .content();
+        log.info("chat stream start provider={} model={} history={}",
+                this.aiProperties.getChat().getProvider(),
+                this.aiProperties.getChat().getModel(),
+                messages.size() - 1);
 
-            if (!StringUtils.hasText(answer)) {
-                throw new AiServiceException("对话引擎未返回有效内容，请稍后重试");
-            }
-
-            long costMillis = (System.nanoTime() - startNanos) / 1_000_000;
-            log.info("chat ok provider={} model={} history={} cost={}ms",
-                    this.aiProperties.getChat().getProvider(),
-                    this.aiProperties.getChat().getModel(),
-                    messages.size() - 1,
-                    costMillis);
-            return answer.trim();
-        } catch (AiServiceException exception) {
-            // 保留业务异常，避免被下面的通用异常再次包装。
-            throw exception;
-        } catch (Exception exception) {
-            long costMillis = (System.nanoTime() - startNanos) / 1_000_000;
-            log.error("chat failed provider={} model={} history={} cost={}ms",
-                    this.aiProperties.getChat().getProvider(),
-                    this.aiProperties.getChat().getModel(),
-                    messages.size() - 1,
-                    costMillis,
-                    exception);
-            throw new AiServiceException("对话服务调用失败，请检查 API Key、模型名称或网络后重试", exception);
-        }
+        return this.modelStreamCaller.collect(
+                this.chatClient.prompt().messages(messages).stream().chatResponse(),
+                onDelta, "普通对话", this.aiProperties.getChat().getModel());
     }
 
     /**
