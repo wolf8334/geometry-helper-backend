@@ -93,9 +93,9 @@ app:
         base-url: https://api.siliconflow.cn/v1
         api-key: ${SILICONFLOW_API_KEY:}
       ofox:
-        base-url: https://api.ofox.io/v1
+        base-url: https://api.ofox.ai/v1
         # 模型 ID 以 anthropic 开头时，AiConfig 会自动改用 Anthropic Messages 协议。
-        anthropic-base-url: https://api.ofox.io/anthropic
+        anthropic-base-url: https://api.ofox.ai/anthropic
         api-key: ${OFOX_API_KEY:}
       ds:
         base-url: https://api.deepseek.com/v1
