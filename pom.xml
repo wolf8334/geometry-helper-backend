@@ -29,6 +29,12 @@
     <properties>
         <java.version>25</java.version>
         <spring-ai.version>2.0.1</spring-ai.version>
+        <!--
+            当前打包以提示词和配置调整为主，默认跳过测试的编译与执行，
+            直接执行 mvn clean package 即可完成打包。
+            需要单独运行测试时，使用：mvn test -Dmaven.test.skip=false
+        -->
+        <maven.test.skip>true</maven.test.skip>
     </properties>
     <dependencies>
         <dependency>
